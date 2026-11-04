@@ -61,20 +61,34 @@ jobs:
 
       - name: Configure
         run: |
-          cmake -S . -B build ${{ env.CMAKE_FLAGS }} 2>&1 | tee configure.log
-          # pipefail off by default; catch cmake failure by the log marker
-          if grep -q "CMake Error" configure.log; then
-            echo "cmake configure failed" >> "$GITHUB_STEP_SUMMARY"
-            tail -n 80 configure.log >> "$GITHUB_STEP_SUMMARY"
+          set -o pipefail
+          if cmake -S . -B build ${{ env.CMAKE_FLAGS }} 2>&1 | tee configure.log; then
+            echo "configure ok"
+          else
+            echo "cmake configure failed, dumping the tail as annotations"
+            tail -n 30 configure.log | tr -d '\r' | cut -c1-400 |
+              while IFS= read -r line; do echo "::error::CONFIGURE: $line"; done
             exit 1
           fi
 
+      - name: Upload configure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: configure-diagnostics
+          path: |
+            configure.log
+          if-no-files-found: ignore
+
       - name: Build the broker and the plugin
         run: |
-          cmake --build build -j $(nproc) --target nanomq cong_nanomq cong_test 2>&1 | tee build.log
-          if grep -qiE "error(:|\b)" build.log; then
-            echo "build failed" >> "$GITHUB_STEP_SUMMARY"
-            grep -n -B2 -A8 -iE "error(:|\b)" build.log | tail -n 80 >> "$GITHUB_STEP_SUMMARY"
+          set -o pipefail
+          if cmake --build build -j $(nproc) --target nanomq cong_nanomq cong_test 2>&1 | tee build.log; then
+            echo "build ok"
+          else
+            echo "build failed, dumping error lines as annotations"
+            grep -n -B2 -A8 -iE "error(:|\b)" build.log | tail -n 25 | tr -d '\r' | cut -c1-400 |
+              while IFS= read -r line; do echo "::error::BUILD: $line"; done
             exit 1
           fi
 
