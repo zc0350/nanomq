@@ -60,10 +60,23 @@ jobs:
           git -C nng apply "$GITHUB_WORKSPACE/cong/patch/01-nng-connect-hook.patch"
 
       - name: Configure
-        run: cmake -S . -B build ${{ env.CMAKE_FLAGS }}
+        run: |
+          cmake -S . -B build ${{ env.CMAKE_FLAGS }} 2>&1 | tee configure.log
+          # pipefail off by default; catch cmake failure by the log marker
+          if grep -q "CMake Error" configure.log; then
+            echo "cmake configure failed" >> "$GITHUB_STEP_SUMMARY"
+            tail -n 80 configure.log >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - name: Build the broker and the plugin
-        run: cmake --build build -j $(nproc) --target nanomq cong_nanomq cong_test
+        run: |
+          cmake --build build -j $(nproc) --target nanomq cong_nanomq cong_test 2>&1 | tee build.log
+          if grep -qiE "error(:|\b)" build.log; then
+            echo "build failed" >> "$GITHUB_STEP_SUMMARY"
+            grep -n -B2 -A8 -iE "error(:|\b)" build.log | tail -n 80 >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - name: Run rule engine unit tests
         run: ./build/cong/cong_test
@@ -109,10 +122,22 @@ jobs:
           git -C nng apply "$GITHUB_WORKSPACE/cong/patch/01-nng-connect-hook.patch"
 
       - name: Configure
-        run: cmake -S . -B build ${{ env.CMAKE_FLAGS }}
+        run: |
+          cmake -S . -B build ${{ env.CMAKE_FLAGS }} 2>&1 | tee configure.log
+          if grep -q "CMake Error" configure.log; then
+            echo "cmake configure failed" >> "$GITHUB_STEP_SUMMARY"
+            tail -n 80 configure.log >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - name: Build
-        run: cmake --build build -j $(nproc) --target nanomq cong_nanomq
+        run: |
+          cmake --build build -j $(nproc) --target nanomq cong_nanomq 2>&1 | tee build.log
+          if grep -qiE "error(:|\b)" build.log; then
+            echo "build failed" >> "$GITHUB_STEP_SUMMARY"
+            grep -n -B2 -A8 -iE "error(:|\b)" build.log | tail -n 80 >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - name: Package
         run: |
