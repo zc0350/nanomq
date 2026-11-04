@@ -399,7 +399,7 @@ add_subdirectory(nanomq)
 if(ENABLE_PLUGIN)
   # JSONL login + ACL policy plugin; builds cong_nanomq.so and its unit tests.
   # Must come after add_subdirectory(nng): it compiles nng's vendored cJSON.c
-  # and reads ${nng_SOURCE_DIR}.
+  # (the nng submodule checkout must exist at <repo>/nng).
   add_subdirectory(cong)
 endif(ENABLE_PLUGIN)
 

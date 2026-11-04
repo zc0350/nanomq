@@ -29,7 +29,16 @@ set(CONG_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cong_topic.c
 )
 
-set(CONG_NNG_CJSON ${nng_SOURCE_DIR}/src/supplemental/nanolib/cJSON.c)
+# The nng submodule lives at <repo>/nng. Its CMake project() only publishes
+# ${nng_SOURCE_DIR} inside its own subdirectory scope, which a sibling scope
+# does not see - so point at the submodule directly and fail loudly when it
+# has not been checked out.
+set(CONG_NNG_DIR ${CMAKE_SOURCE_DIR}/nng)
+set(CONG_NNG_CJSON ${CONG_NNG_DIR}/src/supplemental/nanolib/cJSON.c)
+
+if(NOT EXISTS ${CONG_NNG_CJSON})
+  message(FATAL_ERROR "cong: ${CONG_NNG_CJSON} not found - run 'git submodule update --init --recursive' first")
+endif()
 
 set(CONG_PLUGIN_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cong_nanomq.c
@@ -42,7 +51,7 @@ set(CONG_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     # "include/plugin.h" of the broker, and the nng headers it pulls in
     ${CMAKE_SOURCE_DIR}/nanomq
-    ${nng_SOURCE_DIR}/include
+    ${CONG_NNG_DIR}/include
 )
 
 add_library(cong_nanomq MODULE ${CONG_PLUGIN_SOURCES})
@@ -82,7 +91,7 @@ set_target_properties(cong_test PROPERTIES C_STANDARD 99)
 target_include_directories(cong_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${nng_SOURCE_DIR}/include
+    ${CONG_NNG_DIR}/include
 )
 
 set_source_files_properties(${CONG_NNG_CJSON}
