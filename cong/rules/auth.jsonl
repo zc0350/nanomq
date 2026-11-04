@@ -1,0 +1,64 @@
+# cong 插件登录规则。一行一个 JSON 对象；# 开头与空行跳过。
+# 未知字段会让插件拒绝加载整个文件（拼错字段不能悄悄削弱规则）。
+# 同一行里重复的键也整份拒绝：C 侧（cJSON）读第一个、Python 侧读最后一个，
+# 两侧读法不一样，留着等于一把「校验器和插件各认一个」的锁。
+#   username / clientid : 省略即匹配任意；"match": "regex" 走 POSIX 扩展正则；"*" 表示任意
+#   ip                  : 单个 IP 或 CIDR，IPv4/IPv6
+#   alg                 : md5 | sha1 | sha256 | sha512
+#   scheme              : 用 "+" 切成 1..8 段，按段序拼成摘要输入。每段两种写法之一：
+#                         - 整段关键字 username / clientid / salt，取该身份全文；
+#                         - 模板，字面文本里嵌捕获组：%u1..%u9 = username 正则的第 N 组，
+#                           %c1..%c9 = clientid 正则的第 N 组，%% = 一个真的百分号。
+#                         例：username+clientid+salt、salt+username、%u1_%u2+salt、%c2+%c1+salt
+#                       "+" 是保留分隔符，模板里写不出字面的加号；组号只认一位数字，
+#                         所以 "%u10" 读作「第 1 组后面跟一个字面 0」
+#                       段的顺序就是摘要的顺序：%c1+%c2 与 %c2+%c1 是两个口令，写反登不上
+#                       某组没匹配到（正则里的可选组）按空串参与拼接，不报错
+#                       引用了 %uN 而 username 不是捕获数足够的正则 ⇒ 整个文件拒绝加载
+#   sanitize            : 默认 true，参与摘要的 username、clientid 连同它们的捕获组逐段清洗，
+#                         删掉非 [A-Za-z0-9] 字符（下划线、连字符、逗号、竖线等）；
+#                         salt 和模板里的字面文本始终原样，所以用 "_" 当分隔符不会被删掉
+# 求值顺序：正则先作用于原始 username / clientid，取到的组各自按 sanitize 清洗，再按 scheme 拼接。
+# 命中顺序：字面 username 的规则优先，其次按文件顺序尝试正则/"*" 规则；口令对上一条候选规则
+# 就放行，所以同一个账号写成两条 scheme 不同的规则，等于这两个口令都能开这把锁。
+# 同一条规则的 clientid 与 ip 是附加约束（AND）。全部试完仍不匹配即拒绝。
+# scheme 点名的身份字段必须在连接上真实存在：缺了只会跳过该条规则，绝不拿空串去摘要。
+# 两个 broker 都会替空 clientid 生成随机值，所以 clientid 参与摘要天然拒绝未上报 clientid 的客户端。
+
+# dashboard：sha256(salt + "dashboard")
+{"username":"dashboard","salt":"c0ng-2026","alg":"sha256","scheme":"salt+username"}
+
+# aaaa_bbbb / aaaa_cccc 这类账号统一用一条正则规则；正则作用于原始用户名，
+# 摘要作用于去掉下划线之后的用户名：md5("aaaabbbb" + "d3v1c3")
+{"username":"^aaaa_[a-z0-9]+$","match":"regex","salt":"d3v1c3","alg":"md5","scheme":"username+salt"}
+
+# 网关账号：用户名正则 + clientid 正则 + 来源网段三个条件同时满足
+{"username":"^gw_.*","match":"regex","clientid":"^gw-[0-9A-F]{8}$","clientid_match":"regex","ip":"10.0.0.0/8","salt":"gtw","alg":"sha512","scheme":"salt+username+salt"}
+
+# 显式关闭清洗的例子：摘要里保留 username 原文（含下划线）
+{"username":"legacy_x","salt":"old","alg":"sha1","scheme":"username+salt","sanitize":false}
+
+# 用户名与 clientid 一起进摘要：设备口令 = sha256("pump0007" + "PUMP0007" + "pl4nt")。
+# 同一个账号换个 clientid 就是另一个口令，一台设备的口令泄露不波及整条产线。
+# 生成口令：cong_pwgen.py digest --username pump_0007 --clientid PUMP-0007 \
+#                 --salt pl4nt --alg sha256 --scheme username+clientid+salt
+{"username":"^pump_([0-9]{4})$","match":"regex","salt":"pl4nt","alg":"sha256","scheme":"username+clientid+salt"}
+
+# 按分组摘要：用户名是「5 位产品码_设备码」，两段分别进摘要，下划线由 scheme 写成字面分隔符。
+# 与上面 "username+salt" 的分别是真实的：整名清洗会把分隔符一起删掉，"abcde_aaaa" 与
+# "abcdeaaaa" 清洗后同为 "abcdeaaaa"，共用一个口令 80d013f4...；按分组拼出的口令
+# sha256("abcde" + "_" + "aaaa" + "sp11") = d92426dd...，而 "abcdeaaaa" 根本过不了这条正则。
+# 分隔符不会把自己删掉，是因为字面文本不参与清洗，清洗只作用于每个组值。
+# 生成口令：cong_pwgen.py digest --username abcde_aaaa \
+#                 --username-regex '^([a-z]{5})_([a-z0-9]+)$' \
+#                 --salt sp11 --alg sha256 --scheme '%u1_%u2+salt'
+{"username":"^([a-z]{5})_([a-z0-9]+)$","match":"regex","salt":"sp11","alg":"sha256","scheme":"%u1_%u2+salt"}
+
+# 一机一密，口令来自 clientid 的两个分组，且第二段先入摘要：
+# GW-1234-AAAA 的口令 = sha256("AAAA" + "1234" + "m4ch1ne") = dc3cd397...，
+# 同型号写成 GW-AAAA-1234 就是另一个口令（换序不会蒙对）。这条规则不约束 username，
+# 只约束 clientid 正则，所以任何用户名带这个 clientid 都走同一把口令。
+# 生成口令：cong_pwgen.py digest --clientid GW-1234-AAAA \
+#                 --clientid-regex '^GW-([0-9A-F]{4})-([0-9A-F]{4})$' \
+#                 --salt m4ch1ne --alg sha256 --scheme '%c2+%c1+salt'
+{"clientid":"^GW-([0-9A-F]{4})-([0-9A-F]{4})$","clientid_match":"regex","salt":"m4ch1ne","alg":"sha256","scheme":"%c2+%c1+salt"}

@@ -57,7 +57,7 @@ set(SOURCES
 )
 
 if(NNG_ENABLE_PLUGIN)
-  set(SOURCES ${SOURCES} plugin/plugin.c)
+  set(SOURCES ${SOURCES} plugin/plugin.c plugin/plugin_hooks.c)
 endif(NNG_ENABLE_PLUGIN)
 
 include_directories(${FOUNDATION_INCLUDE_DIR})
@@ -69,6 +69,18 @@ elseif (BUILD_SHARED_LIBS)
   set_property(TARGET nanomq PROPERTY POSITION_INDEPENDENT_CODE 1)
 else()
   add_executable(nanomq ${SOURCES})
+endif()
+
+# A plugin loaded with dlopen() resolves the hook registry and the MQTT topic
+# matchers in the process that loaded it, so those symbols have to be in the
+# dynamic symbol table. NanoMQ links nng statically by default, which otherwise
+# hides every one of them and the plugin fails to load with
+# "undefined symbol: plugin_hook_register".
+if(NNG_ENABLE_PLUGIN AND NOT BUILD_STATIC_LIB AND NOT BUILD_SHARED_LIBS)
+  set_target_properties(nanomq PROPERTIES ENABLE_EXPORTS ON)
+  if(NOT APPLE)
+    target_link_libraries(nanomq -rdynamic)
+  endif()
 endif()
 
 if(ENABLE_MYSQL)

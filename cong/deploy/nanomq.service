@@ -1,0 +1,47 @@
+[Unit]
+Description=NanoMQ MQTT broker with the cong JSONL login + ACL plugin
+Documentation=file:///usr/local/share/doc/cong-nanomq/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# nanomq start 默认不 daemon 化（conf.c 里 daemon = false），进程就是主进程。
+Type=simple
+
+# 补丁过的 broker 和策略插件一起装在这里；改过 make 的 PREFIX 就要同步改这两行。
+ExecStartPre=/bin/mkdir -p /tmp/nanomq
+ExecStart=/usr/local/sbin/nanomq start --conf /etc/nanomq/nanomq.conf
+
+# 插件重载规则文件靠 `nanomq reload`（NanoMQ 收到 SIGHUP 只重开日志文件，
+# 不会通知插件，所以不要指望 kill -HUP）。reload 是 CLI 通过
+# ipc:///tmp/nanomq_cmd.ipc 找正在跑的 broker 的，broker 也靠
+# /tmp/nanomq/nanomq.pid 认定自己还活着——因此这里绝对不能开 PrivateTmp：
+# 开了以后 CLI 看到的 /tmp 是另一个命名空间，reload 会报「NanoMQ is not running」。
+# ExecStart 前那个 mkdir 就是给 pid 文件准备目录的（nng 写文件不会顺手建目录）。
+
+# 规则文件路径。NanoMQ 的插件框架不向插件传选项，只能走环境变量；
+# 这两个默认值与 `make install` 装出来的位置一致，写在这里是为了换路径时
+# 只改 unit、不用碰 broker 的配置。CONG_DEBUG 打开后会额外打印「放行」的判定，
+# 平时不要开（每条消息一行日志）。
+Environment=CONG_AUTH_FILE=/etc/nanomq/cong_auth.jsonl
+Environment=CONG_ACL_FILE=/etc/nanomq/cong_acl.jsonl
+# Environment=CONG_DEBUG=1
+
+# broker 自己不做降权，规则文件里有派生口令用的 salt，所以要么让本服务以
+# 专门的账号运行并把 /etc/nanomq 设为该账号可读，要么把两个 .jsonl 收紧成
+# 0640 root:root。用非 root 账号时监听 1883 没问题，监听 8883 也无 privileged
+# 端口需求，可以直接打开下面这行（CapDrop 之类的高限制加固同理按需）。
+# User=nanomq
+# Group=nanomq
+
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=65536
+
+# 插件的判定日志写 stderr，journald 会连同 broker 的 console 日志一起收走。
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nanomq
+
+[Install]
+WantedBy=multi-user.target

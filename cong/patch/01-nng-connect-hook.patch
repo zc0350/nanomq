@@ -1,0 +1,189 @@
+diff --git a/include/nng/protocol/mqtt/connect_hook.h b/include/nng/protocol/mqtt/connect_hook.h
+new file mode 100644
+index 0000000..664e80b
+--- /dev/null
++++ b/include/nng/protocol/mqtt/connect_hook.h
+@@ -0,0 +1,54 @@
++//
++// Copyright 2024 NanoMQ Team, Inc. <jaylin@emqx.io>
++//
++// This software is supplied under the terms of the MIT License, a
++// copy of which should be located in the distribution where this
++// file was obtained (LICENSE.txt).  A copy of the license may also be
++// found online at https://opensource.org/licenses/MIT.
++//
++#ifndef NNG_PROTOCOL_MQTT_CONNECT_HOOK_H
++#define NNG_PROTOCOL_MQTT_CONNECT_HOOK_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#include <nng/nng.h>
++
++// The identity of a client that has just sent a CONNECT packet, handed to
++// the authentication hook installed by the application layer.
++//
++// Every pointer is owned by the protocol stack and stays valid only for the
++// duration of the callback, so a hook that keeps any of it must copy it.
++typedef struct nano_connect_params {
++	const char *clientid;
++	// NULL when the client sent no username. When the broker maps a TLS
++	// client certificate to a username, this is the mapped name.
++	const char *username;
++	// The password as it arrived on the wire; the hook decides the format.
++	const char *password;
++	const char *ip_addr;
++	const char *proto_name;
++	uint8_t     proto_ver;
++	bool        clean_start;
++} nano_connect_params;
++
++// Returns true to accept the connection and false to refuse it. A refused
++// connection gets the same CONNACK reason code the built-in username and
++// password check would have used.
++typedef bool (*nano_connect_auth_cb)(nano_connect_params *params);
++
++// Installs the hook that decides CONNECT authentication. Passing NULL removes
++// it and restores the built-in behaviour. Only one hook can be installed, and
++// it must be installed before the broker starts listening, because the
++// protocol stack reads the pointer without locking.
++NNG_DECL void nano_connect_auth_set(nano_connect_auth_cb cb);
++
++// Whether a hook is installed. The built-in check is skipped when one is, so
++// that exactly one policy decides a connection.
++NNG_DECL bool nano_connect_auth_enabled(void);
++
++// Used by the MQTT protocol stack: runs the installed hook, and accepts the
++// connection when no hook is installed.
++NNG_DECL bool nano_connect_auth_call(nano_connect_params *params);
++
++#endif // NNG_PROTOCOL_MQTT_CONNECT_HOOK_H
+diff --git a/src/sp/protocol/mqtt/CMakeLists.txt b/src/sp/protocol/mqtt/CMakeLists.txt
+index 12571fe..55ef121 100755
+--- a/src/sp/protocol/mqtt/CMakeLists.txt
++++ b/src/sp/protocol/mqtt/CMakeLists.txt
+@@ -5,8 +5,8 @@
+ nng_directory(mqtt)
+ 
+ if (NNG_PROTO_MQTT_BROKER)
+-    nng_sources_if(NNG_PROTO_MQTT_BROKER mqtt_parser.c nmq_mqtt.c auth_http.c)
+-    nng_headers_if(NNG_PROTO_MQTT_BROKER nng/protocol/mqtt/mqtt_parser.h nng/protocol/mqtt/nmq_mqtt.h)
++    nng_sources_if(NNG_PROTO_MQTT_BROKER mqtt_parser.c nmq_mqtt.c auth_http.c connect_hook.c)
++    nng_headers_if(NNG_PROTO_MQTT_BROKER nng/protocol/mqtt/mqtt_parser.h nng/protocol/mqtt/nmq_mqtt.h nng/protocol/mqtt/connect_hook.h)
+     nng_defines_if(NNG_PROTO_MQTT_BROKER NNG_HAVE_MQTT_BROKER)
+ endif ()
+ 
+diff --git a/src/sp/protocol/mqtt/connect_hook.c b/src/sp/protocol/mqtt/connect_hook.c
+new file mode 100644
+index 0000000..52c23e5
+--- /dev/null
++++ b/src/sp/protocol/mqtt/connect_hook.c
+@@ -0,0 +1,41 @@
++//
++// Copyright 2024 NanoMQ Team, Inc. <jaylin@emqx.io>
++//
++// This software is supplied under the terms of the MIT License, a
++// copy of which should be located in the distribution where this
++// file was obtained (LICENSE.txt).  A copy of the license may also be
++// found online at https://opensource.org/licenses/MIT.
++//
++// The protocol stack cannot call into the broker application, so the
++// authentication hook is a function pointer the application installs here and
++// nano_pipe_start() calls. See the note in connect_hook.h: the pointer is read
++// from the CONNECT path without locking, so it has to be set before listeners
++// accept their first connection.
++#include "core/nng_impl.h"
++#include "nng/protocol/mqtt/connect_hook.h"
++
++static nano_connect_auth_cb nano_connect_auth_hook = NULL;
++
++void
++nano_connect_auth_set(nano_connect_auth_cb cb)
++{
++	nano_connect_auth_hook = cb;
++}
++
++bool
++nano_connect_auth_enabled(void)
++{
++	return (nano_connect_auth_hook != NULL);
++}
++
++// Internal: runs the installed hook. Returns true when the connection is
++// accepted, including when no hook is installed, so callers can read it as
++// "the hook did not refuse this client".
++bool
++nano_connect_auth_call(nano_connect_params *params)
++{
++	if (nano_connect_auth_hook == NULL) {
++		return (true);
++	}
++	return (nano_connect_auth_hook(params));
++}
+diff --git a/src/sp/protocol/mqtt/nmq_mqtt.c b/src/sp/protocol/mqtt/nmq_mqtt.c
+index db64c2b..a30b84d 100644
+--- a/src/sp/protocol/mqtt/nmq_mqtt.c
++++ b/src/sp/protocol/mqtt/nmq_mqtt.c
+@@ -13,6 +13,7 @@
+ #include "core/sockimpl.h"
+ #include "nng/nng.h"
+ #include "nng/protocol/mqtt/mqtt.h"
++#include "nng/protocol/mqtt/connect_hook.h"
+ #include "nng/protocol/mqtt/mqtt_parser.h"
+ #include "nng/protocol/mqtt/nmq_mqtt.h"
+ #include "supplemental/mqtt/mqtt_msg.h"
+@@ -640,6 +641,38 @@ nano_pipe_init(void *arg, nni_pipe *pipe, void *s)
+ 	return (0);
+ }
+ 
++// Runs the authentication hook installed by the application layer. Returns
++// NNG_MQTT_SUCCESS when the client is accepted - including when no hook is
++// installed, which is the signal for the caller to fall back to
++// verify_connect() - and the CONNACK reason code to send when refused, using
++// the same codes as verify_connect().
++static uint8_t
++nano_pipe_connect_auth(nano_pipe *p)
++{
++	nano_connect_params params;
++	conn_param         *cp = p->conn_param;
++
++	if (!nano_connect_auth_enabled()) {
++		return (NNG_MQTT_SUCCESS);
++	}
++
++	params.clientid    = conn_param_get_clientid(cp);
++	params.username    = (const char *) conn_param_get_username(cp);
++	params.password    = (const char *) conn_param_get_password(cp);
++	params.ip_addr     = conn_param_get_ip_addr_v4(cp);
++	params.proto_name  = (const char *) conn_param_get_pro_name(cp);
++	params.proto_ver   = conn_param_get_protover(cp);
++	params.clean_start = conn_param_get_clean_start(cp) == 1;
++
++	if (nano_connect_auth_call(&params)) {
++		return (NNG_MQTT_SUCCESS);
++	}
++	log_warn("authentication hook refused clientid [%s] username [%s]",
++	    params.clientid != NULL ? params.clientid : "",
++	    params.username != NULL ? params.username : "");
++	return (params.proto_ver == 5 ? BAD_USER_NAME_OR_PASSWORD : 0x05);
++}
++
+ static int
+ nano_pipe_start(void *arg)
+ {
+@@ -720,8 +753,14 @@ auth_verify:
+ 	rv = nano_pipe_peer_cert_as_username(p, nng_pipe, &cert_auth);
+ 	// A verified certificate replaces the username/password check;
+ 	// HTTP authentication still runs and sees the certificate username.
++	// An installed authentication hook replaces the built-in check for the
++	// same reason: exactly one policy decides a password login, and the
++	// hook has no way to express the built-in one.
+ 	if (rv == NNG_MQTT_SUCCESS && !cert_auth) {
+-		rv = verify_connect(p->conn_param, s->conf);
++		rv = nano_pipe_connect_auth(p);
++		if (rv == NNG_MQTT_SUCCESS && !nano_connect_auth_enabled()) {
++			rv = verify_connect(p->conn_param, s->conf);
++		}
+ 	}
+ 	// TODO Avoid holding s->lk across HTTP authentication.
+ 	if (rv == NNG_MQTT_SUCCESS) {

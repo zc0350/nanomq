@@ -17,6 +17,10 @@
 #include "nng/supplemental/nanolib/utils.h"
 #include "nng/supplemental/util/platform.h"
 
+#if defined(SUPP_PLUGIN)
+	#include "include/plugin.h"
+#endif
+
 struct cmd_work {
 	enum {
 		INIT,
@@ -92,6 +96,13 @@ handle_recv(const char *msg, size_t msg_len, conf *config, char **err_msg)
 #endif
 	reload_log_config(config, new_conf);
 
+#if defined(SUPP_PLUGIN)
+	// A policy plugin owns files the broker knows nothing about, so it gets
+	// the same signal the broker just gave its own tables. The return value
+	// is not checked: a plugin that cannot re-read its rules keeps enforcing
+	// the last set that loaded cleanly, and says so in the log.
+	plugin_hook_call(HOOK_RELOAD, NULL);
+#endif
 
 	conf_fini(new_conf);
 	cJSON_Delete(obj);

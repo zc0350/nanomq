@@ -52,6 +52,17 @@ int plugin_hook_call(unsigned int point, void *data)
 	return 0;
 }
 
+bool plugin_hook_has(unsigned int point)
+{
+	for (int i = 0; i < cvector_size(g_hooks); i++) {
+		if (g_hooks[i]->point == point) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 int plugin_register(char *path)
 {
 	struct nano_plugin *plugin = NULL;

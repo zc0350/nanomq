@@ -31,6 +31,7 @@ option (BUILD_NFTP "Build nftp client" OFF)
 option (BUILD_BENCH "Build nano-bench" OFF)
 option (BUILD_APP_LIB "Build library for app" OFF)
 option (ENABLE_JWT "Enable jwt library" OFF)
+option (ENABLE_PLUGIN "Enable plugin framework and the cong_nanomq auth/ACL plugin" OFF)
 option (ENABLE_RULE_ENGINE "Enable rule engine" OFF)
 option (ENABLE_MYSQL "Enable MYSQL" OFF)
 option (ENABLE_POSTGRESQL "Enable POSTGRESQL" OFF)
@@ -394,6 +395,13 @@ endif (ENABLE_TIMESCALEDB)
 
 add_subdirectory(nng)
 add_subdirectory(nanomq)
+
+if(ENABLE_PLUGIN)
+  # JSONL login + ACL policy plugin; builds cong_nanomq.so and its unit tests.
+  # Must come after add_subdirectory(nng): it compiles nng's vendored cJSON.c
+  # and reads ${nng_SOURCE_DIR}.
+  add_subdirectory(cong)
+endif(ENABLE_PLUGIN)
 
 add_dependencies(nanomq nng)
 
