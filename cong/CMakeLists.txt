@@ -59,6 +59,9 @@ add_library(cong_nanomq MODULE ${CONG_PLUGIN_SOURCES})
 set_target_properties(cong_nanomq PROPERTIES
     POSITION_INDEPENDENT_CODE ON
     C_STANDARD 99
+    # keep the plain name: nanomq.conf's plugin { libs } points at
+    # .../cong_nanomq.so, and Linux would otherwise prepend "lib"
+    PREFIX ""
 )
 
 target_include_directories(cong_nanomq PRIVATE ${CONG_INCLUDE_DIRS})
