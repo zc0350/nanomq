@@ -45,6 +45,10 @@ decode_unsub_msg(nano_work *work)
 
 	const uint8_t proto_ver = work->proto_ver;
 
+	// defensive init: every early return below must leave the packet in a
+	// state unsub_pkt_free() and encode_unsuback_msg() can handle
+	unsub_pkt->node = NULL;
+
 	// handle varibale header
 	variable_ptr = nng_msg_body(msg);
 	if (remaining_len < 2) {
@@ -260,13 +264,13 @@ unsub_pkt_free(packet_unsubscribe *unsub_pkt)
 		log_error("ctx->sub is nil");
 		return;
 	}
-	if (!unsub_pkt->node) {
-		log_error("not find topic");
-		return;
-	}
 
+	// node == NULL means decode_unsub_msg() failed early: the packet and its
+	// properties still have to be released, or a malformed UNSUBSCRIBE leaks
+	// them on every attempt.
 	FREE_UNSUB_PROPERTIES(unsub_pkt);
 
+	// topic.body points into the MQTT message buffer, it owns no memory.
 	topic_node *tn = unsub_pkt->node;
 	topic_node *next_tn;
 	while (tn) {
@@ -275,8 +279,5 @@ unsub_pkt_free(packet_unsubscribe *unsub_pkt)
 		tn = next_tn;
 	}
 
-	if (tn == NULL) {
-		nng_free(unsub_pkt, sizeof(packet_unsubscribe));
-		unsub_pkt = NULL;
-	}
+	nng_free(unsub_pkt, sizeof(packet_unsubscribe));
 }

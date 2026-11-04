@@ -2182,7 +2182,7 @@ post_rules_sqlite(conf_rule *cr, cJSON *jso_params, char *rawsql)
 	cJSON *jso_param = NULL;
 	cJSON_ArrayForEach(jso_param, jso_params)
 	{
-		if (jso_param) {
+		if (jso_param && jso_param->string) {
 			if (!nng_strcasecmp(jso_param->string, "table")) {
 				if (sqlite_table_exist(
 				        cr, jso_param->valuestring)) {
@@ -2231,7 +2231,7 @@ post_rules_timescaledb(conf_rule *cr, cJSON *jso_params, char *rawsql)
 	rule_timescaledb *timescaledb = rule_timescaledb_init();
 	cJSON_ArrayForEach(jso_param, jso_params)
 	{
-		if (jso_param) {
+		if (jso_param && jso_param->string) {
 			if (!nng_strcasecmp(jso_param->string, "table")) {
 				timescaledb->table =
 				    nng_strdup(jso_param->valuestring);
@@ -2293,7 +2293,7 @@ post_rules_postgresql(conf_rule *cr, cJSON *jso_params, char *rawsql)
 	rule_postgresql *postgresql = rule_postgresql_init();
 	cJSON_ArrayForEach(jso_param, jso_params)
 	{
-		if (jso_param) {
+		if (jso_param && jso_param->string) {
 			if (!nng_strcasecmp(jso_param->string, "table")) {
 				postgresql->table =
 				    nng_strdup(jso_param->valuestring);
@@ -2355,7 +2355,7 @@ post_rules_mysql(conf_rule *cr, cJSON *jso_params, char *rawsql)
 	rule_mysql *mysql = rule_mysql_init();
 	cJSON_ArrayForEach(jso_param, jso_params)
 	{
-		if (jso_param) {
+		if (jso_param && jso_param->string) {
 			if (!nng_strcasecmp(jso_param->string, "table")) {
 				mysql->table =
 				    nng_strdup(jso_param->valuestring);
@@ -2418,7 +2418,7 @@ post_rules_repub(conf_rule *cr, cJSON *jso_params, char *rawsql)
 
 	cJSON_ArrayForEach(jso_param, jso_params)
 	{
-		if (jso_param) {
+		if (jso_param && jso_param->string) {
 			if (!nng_strcasecmp(jso_param->string, "topic")) {
 				repub->topic =
 				    nng_strdup(jso_param->valuestring);
@@ -2460,8 +2460,13 @@ post_rules_repub(conf_rule *cr, cJSON *jso_params, char *rawsql)
 				    "password: %s\n", jso_param->valuestring);
 			} else if (!nng_strcasecmp(
 			               jso_param->string, "clean_start")) {
-				repub->clean_start =
-				    !nng_strcasecmp(jso_param->string, "true");
+				// accept both a JSON boolean and the string
+				// "true"/"false": the old code compared the key name
+				// to "true", so the flag was always false
+				repub->clean_start = cJSON_IsTrue(jso_param) ||
+				    (jso_param->valuestring != NULL &&
+				        !nng_strcasecmp(
+				            jso_param->valuestring, "true"));
 				log_debug("clean_start: %s\n",
 				    jso_param->valuestring);
 			} else {
@@ -2518,6 +2523,13 @@ post_rules(http_msg *msg)
 	char  *rawsql  = cJSON_GetStringValue(jso_sql);
 	log_debug("rawsql: %s\n", rawsql);
 
+	if (rawsql == NULL) {
+		cJSON_Delete(req);
+		cJSON_Delete(res_obj);
+		return error_response(msg, NNG_HTTP_STATUS_BAD_REQUEST,
+		    MISSING_KEY_REQUEST_PARAMES);
+	}
+
 	cJSON *jso_actions = cJSON_GetObjectItem(req, "actions");
 	cJSON *jso_action  = NULL;
 	cJSON_ArrayForEach(jso_action, jso_actions)
@@ -2527,6 +2539,10 @@ post_rules(http_msg *msg)
 		log_debug("name: %s\n", name);
 		cJSON *jso_params = cJSON_GetObjectItem(jso_action, "params");
 		cJSON *jso_param  = NULL;
+		if (name == NULL) {
+			rc = MISSING_KEY_REQUEST_PARAMES;
+			goto error;
+		}
 		if (!nng_strcasecmp(name, "repub")) {
 			if ((rc = post_rules_repub(cr, jso_params, rawsql)) !=
 			    SUCCEED) {
@@ -2613,6 +2629,9 @@ put_rules_repub_parse(cJSON *jso_params, repub_t *repub)
 
 	cJSON_ArrayForEach(jso_param, jso_params)
 	{
+		if (jso_param->string == NULL) {
+			continue;
+		}
 		if (!nng_strcasecmp(jso_param->string, "topic")) {
 			if (repub->topic) {
 				nng_strfree(repub->topic);
@@ -2667,7 +2686,7 @@ put_rules_sqlite_parse(cJSON *jso_params, rule *new_rule)
 	cJSON *jso_param = NULL;
 	cJSON_ArrayForEach(jso_param, jso_params)
 	{
-		if (jso_param) {
+		if (jso_param && jso_param->string) {
 			if (!nng_strcasecmp(jso_param->string, "table")) {
 				log_debug(
 				    "table: %s\n", jso_param->valuestring);
@@ -2689,7 +2708,7 @@ put_rules_mysql_parse(cJSON *jso_params, rule_mysql *mysql)
 	cJSON *jso_param = NULL;
 	cJSON_ArrayForEach(jso_param, jso_params)
 	{
-		if (jso_param) {
+		if (jso_param && jso_param->string) {
 			if (!nng_strcasecmp(jso_param->string, "table")) {
 				if (mysql->table) {
 					nng_strfree(mysql->table);
@@ -2742,7 +2761,7 @@ put_rules_postgresql_parse(cJSON *jso_params, rule_postgresql *postgresql)
 	cJSON *jso_param = NULL;
 	cJSON_ArrayForEach(jso_param, jso_params)
 	{
-		if (jso_param) {
+		if (jso_param && jso_param->string) {
 			if (!nng_strcasecmp(jso_param->string, "table")) {
 				if (postgresql->table) {
 					nng_strfree(postgresql->table);
@@ -2794,7 +2813,7 @@ put_rules_timescaledb_parse(cJSON *jso_params, rule_timescaledb *timescaledb)
 	cJSON *jso_param = NULL;
 	cJSON_ArrayForEach(jso_param, jso_params)
 	{
-		if (jso_param) {
+		if (jso_param && jso_param->string) {
 			if (!nng_strcasecmp(jso_param->string, "table")) {
 				if (timescaledb->table) {
 					nng_strfree(timescaledb->table);
@@ -3802,7 +3821,7 @@ send_publish(nng_socket *sock, const char *clientid, char *payload,
 				nng_mqtt_msg_set_publish_payload(
 				    pub_msg, NULL, 0);
 			}
-			nng_free(decode_data, 0);
+			nng_free(decode_data, out_size);
 		} else {
 			nng_mqtt_msg_set_publish_payload(
 			    pub_msg, (uint8_t *) payload, payload_len);

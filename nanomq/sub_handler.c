@@ -19,6 +19,10 @@
 #include "include/sub_handler.h"
 #include "include/acl_handler.h"
 
+#if defined(SUPP_PLUGIN)
+	#include "include/plugin.h"
+#endif
+
 #define FREE_SUB_PROPERTIES(pkt)                  \
     do {                                            \
         if ((pkt)->properties != NULL) {            \
@@ -438,6 +442,27 @@ sub_ctx_handle(nano_work *work)
 			topic_str = rewritten_topic;
 			topic_len = (int) strlen(rewritten_topic);
 		}
+#if defined(SUPP_PLUGIN)
+		// A plugin that owns authorisation is asked first, and for the same
+		// reason as in handle_pub(): one policy decides, and the filter tested
+		// here is the mount-point prefixed one the client really subscribes to.
+		int hook_rv = nano_plugin_acl_check(work->cparam, work->config,
+		    NANO_HOOK_ACL_SUB, topic_str);
+
+		if (hook_rv != NANO_HOOK_ALLOWED) {
+			tn->reason_code = NMQ_AUTH_SUB_ERROR;
+			if (hook_rv == NANO_HOOK_DISCONNECT) {
+				// No SUBACK: the connection goes away, as it does
+				// for a native ACL denial with deny_action = disconnect.
+				if (rewritten_topic != NULL) {
+					nng_free(rewritten_topic,
+					    strlen(rewritten_topic) + 1);
+				}
+				return BANNED;
+			}
+			goto next;
+		}
+#endif
 #ifdef ACL_SUPP
 		/* Add items which not included in dbhash */
 		if (work->config->acl.enable) {
@@ -461,6 +486,10 @@ sub_ctx_handle(nano_work *work)
 					// closes the connection without a SUBACK
 					// (see broker.c).
 					log_warn("acl deny, disconnect client");
+					if (rewritten_topic != NULL) {
+						nng_free(rewritten_topic,
+						    strlen(rewritten_topic) + 1);
+					}
 					return BANNED;
 				} else if (work->config->acl_deny_action ==
 				    ACL_IGNORE) {

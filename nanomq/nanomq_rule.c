@@ -269,29 +269,48 @@ nanomq_client_timescaledb(conf_rule *cr, bool init_last)
 			continue;
 		}
 		if (RULE_FORWORD_TIMESCALEDB == cr->rules[i].forword_type) {
-			int  index      = 0;
-			char table[256] = { 0 };
+			int   index = 0;
+			char  table[256];
+			char *p        = table;
+			size_t left    = sizeof(table);
 
-			snprintf(table, 128,
+			int n = snprintf(p, left,
 			    "CREATE TABLE IF NOT EXISTS %s("
 			    "idx BIGSERIAL",
 			    cr->rules[i].timescaledb->table);
 
-			char *err_msg = NULL;
-			bool  first   = true;
+			if (n < 0 || (size_t) n >= left) {
+				log_error("SQL buffer overflow (table name too long)\n");
+				return 1;
+			}
+
+			p += n;
+			left -= (size_t) n;
 
 			for (; index < 8; index++) {
 				if (!cr->rules[i].flag[index])
 					continue;
 
-				strcat(table, ", ");
-				strcat(table,
+				n = snprintf(p, left, ", %s%s",
 				    cr->rules[i].as[index]
 				        ? cr->rules[i].as[index]
-				        : key_arr[index]);
-				strcat(table, ts_type_arr[index]);
+				        : key_arr[index],
+				    ts_type_arr[index]);
+
+				if (n < 0 || (size_t) n >= left) {
+					log_error("SQL buffer overflow (column too long)\n");
+					return 1;
+				}
+
+				p += n;
+				left -= (size_t) n;
 			}
-			strcat(table, ");");
+
+			if (left < 3) {
+				log_error("SQL buffer overflow (finalize)\n");
+				return 1;
+			}
+			snprintf(p, left, ");");
 
 			rule_timescaledb *timescaledb = cr->rules[i].timescaledb;
 
@@ -359,29 +378,48 @@ nanomq_client_postgresql(conf_rule *cr, bool init_last)
 			continue;
 		}
 		if (RULE_FORWORD_POSTGRESQL == cr->rules[i].forword_type) {
-			int  index      = 0;
-			char table[256] = { 0 };
+			int   index = 0;
+			char  table[256];
+			char *p        = table;
+			size_t left    = sizeof(table);
 
-			snprintf(table, 128,
+			int n = snprintf(p, left,
 			    "CREATE TABLE IF NOT EXISTS %s("
 			    "idx SERIAL PRIMARY KEY",
 			    cr->rules[i].postgresql->table);
 
-			char *err_msg = NULL;
-			bool  first   = true;
+			if (n < 0 || (size_t) n >= left) {
+				log_error("SQL buffer overflow (table name too long)\n");
+				return 1;
+			}
+
+			p += n;
+			left -= (size_t) n;
 
 			for (; index < 8; index++) {
 				if (!cr->rules[i].flag[index])
 					continue;
 
-				strcat(table, ", ");
-				strcat(table,
+				n = snprintf(p, left, ", %s%s",
 				    cr->rules[i].as[index]
 				        ? cr->rules[i].as[index]
-				        : key_arr[index]);
-				strcat(table, type_arr[index]);
+				        : key_arr[index],
+				    type_arr[index]);
+
+				if (n < 0 || (size_t) n >= left) {
+					log_error("SQL buffer overflow (column too long)\n");
+					return 1;
+				}
+
+				p += n;
+				left -= (size_t) n;
 			}
-			strcat(table, ");");
+
+			if (left < 3) {
+				log_error("SQL buffer overflow (finalize)\n");
+				return 1;
+			}
+			snprintf(p, left, ");");
 
 			rule_postgresql *postgresql = cr->rules[i].postgresql;
 
@@ -441,28 +479,48 @@ nanomq_client_mysql(conf_rule *cr, bool init_last)
 			continue;
 		}
 		if (RULE_FORWORD_MYSQL == cr->rules[i].forword_type) {
-			int  index      = 0;
-			char table[256] = { 0 };
+			int   index = 0;
+			char  table[256];
+			char *p        = table;
+			size_t left    = sizeof(table);
 
-			snprintf(table, 128,
+			int n = snprintf(p, left,
 			    "CREATE TABLE IF NOT EXISTS %s("
 			    "idx INT PRIMARY KEY AUTO_INCREMENT",
 			    cr->rules[i].mysql->table);
-			char *err_msg = NULL;
-			bool  first   = true;
+
+			if (n < 0 || (size_t) n >= left) {
+				log_error("SQL buffer overflow (table name too long)\n");
+				return 1;
+			}
+
+			p += n;
+			left -= (size_t) n;
 
 			for (; index < 8; index++) {
 				if (!cr->rules[i].flag[index])
 					continue;
 
-				strcat(table, ", ");
-				strcat(table,
+				n = snprintf(p, left, ", %s%s",
 				    cr->rules[i].as[index]
 				        ? cr->rules[i].as[index]
-				        : key_arr[index]);
-				strcat(table, type_arr[index]);
+				        : key_arr[index],
+				    type_arr[index]);
+
+				if (n < 0 || (size_t) n >= left) {
+					log_error("SQL buffer overflow (column too long)\n");
+					return 1;
+				}
+
+				p += n;
+				left -= (size_t) n;
 			}
-			strcat(table, ");");
+
+			if (left < 3) {
+				log_error("SQL buffer overflow (finalize)\n");
+				return 1;
+			}
+			snprintf(p, left, ");");
 
 			rule_mysql *mysql = cr->rules[i].mysql;
 			MYSQL *con = mysql_init(NULL);

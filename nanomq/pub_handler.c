@@ -186,15 +186,18 @@ cmp_str(
 		return false;
 	}
 
+	// full-string equality: a prefix match would let rule "sensor/temperature"
+	// also take publishes of topic "sensor/temp"
+	(void) len;
 	bool filter = true;
 	switch (type) {
 	case RULE_CMP_EQUAL:
-		if (strncmp(value_checked, value_seted, len)) {
+		if (strcmp(value_checked, value_seted)) {
 			filter = false;
 		}
 		break;
 	case RULE_CMP_UNEQUAL:
-		if (!strncmp(value_checked, value_seted, len)) {
+		if (!strcmp(value_checked, value_seted)) {
 			filter = false;
 		}
 		break;
@@ -314,7 +317,8 @@ rule_engine_filter(nano_work *work, rule *info)
 	bool               filter = true;
 	if (RULE_FORWORD_REPUB == info->forword_type) {
 		const char *cid = (const char *) conn_param_get_clientid(cp);
-		if (info->repub->clientid && cmp_str(cid, strlen(cid), info->repub->clientid,
+		if (info->repub->clientid &&
+		    cmp_str(cid, cid ? strlen(cid) : 0, info->repub->clientid,
 		        RULE_CMP_EQUAL)) {
 			return false;
 		}
@@ -353,7 +357,7 @@ rule_engine_filter(nano_work *work, rule *info)
 						    conn_param_get_clientid(
 						        cp);
 						filter = cmp_str(cid,
-						    strlen(cid), val,
+						    cid ? strlen(cid) : 0, val,
 						    info->cmp_type[j]);
 
 						break;
@@ -363,7 +367,7 @@ rule_engine_filter(nano_work *work, rule *info)
 						        conn_param_get_username(
 						            cp);
 						filter = cmp_str(username,
-						    strlen(username), val,
+						    username ? strlen(username) : 0, val,
 						    info->cmp_type[j]);
 						break;
 					case RULE_PASSWORD:;
@@ -372,7 +376,7 @@ rule_engine_filter(nano_work *work, rule *info)
 						        conn_param_get_password(
 						            cp);
 						filter = cmp_str(password,
-						    strlen(password), val,
+						    password ? strlen(password) : 0, val,
 						    info->cmp_type[j]);
 						break;
 					case RULE_TIMESTAMP:
@@ -450,63 +454,78 @@ generate_key(rule *info, int j, nano_work *work)
 		switch (j) {
 		case RULE_QOS:
 			if (info->key->auto_inc) {
-				sprintf(str, "%d%d", pp->fixed_header.qos, index++);
+				snprintf(str, sizeof(str), "%d%d", pp->fixed_header.qos, index++);
 			} else {
-				sprintf(str, "%d", pp->fixed_header.qos);
+				snprintf(str, sizeof(str), "%d", pp->fixed_header.qos);
 			}
 			break;
 		case RULE_ID:
 			if (info->key->auto_inc) {
-				sprintf(str, "%d%d", pp->var_header.publish.packet_id, index++);
+				snprintf(str, sizeof(str), "%d%d", pp->var_header.publish.packet_id, index++);
 			} else {
-				sprintf(str, "%d", pp->var_header.publish.packet_id);
+				snprintf(str, sizeof(str), "%d", pp->var_header.publish.packet_id);
 			}
 			break;
 		case RULE_TOPIC:;
 			char *topic = pp->var_header.publish.topic_name.body;
+			if (topic == NULL) {
+				break;
+			}
 			if (info->key->auto_inc) {
-				sprintf(str, "%s%d", topic, index++);
+				snprintf(str, sizeof(str), "%s%d", topic, index++);
 			} else {
-				sprintf(str, "%s", topic);
+				snprintf(str, sizeof(str), "%s", topic);
 			}
 			break;
 		case RULE_CLIENTID:;
 			char *cid = (char *) conn_param_get_clientid(cp);
+			if (cid == NULL) {
+				break;
+			}
 			if (info->key->auto_inc) {
-				sprintf(str, "%s%d", cid, index++);
+				snprintf(str, sizeof(str), "%s%d", cid, index++);
 			} else {
-				sprintf(str, "%s", cid);
+				snprintf(str, sizeof(str), "%s", cid);
 			}
 			break;
 		case RULE_USERNAME:;
 			char *username = (char *) conn_param_get_username(cp);
+			if (username == NULL) {
+				break;
+			}
 			if (info->key->auto_inc) {
-				sprintf(str, "%s%d", username, index++);
+				snprintf(str, sizeof(str), "%s%d", username, index++);
 			} else {
-				sprintf(str, "%s", username);
+				snprintf(str, sizeof(str), "%s", username);
 			}
 			break;
 		case RULE_PASSWORD:;
 			char *password = (char *) conn_param_get_password(cp);
+			if (password == NULL) {
+				break;
+			}
 			if (info->key->auto_inc) {
-				sprintf(str, "%s%d", password, index++);
+				snprintf(str, sizeof(str), "%s%d", password, index++);
 			} else {
-				sprintf(str, "%s", password);
+				snprintf(str, sizeof(str), "%s", password);
 			}
 			break;
 		case RULE_TIMESTAMP:
 			if (info->key->auto_inc) {
-				sprintf(str, "%ld%d", (unsigned long)time(NULL), index++);
+				snprintf(str, sizeof(str), "%ld%d", (unsigned long)time(NULL), index++);
 			} else {
-				sprintf(str, "%ld", (unsigned long)time(NULL));
+				snprintf(str, sizeof(str), "%ld", (unsigned long)time(NULL));
 			}
 			break;
 		case RULE_PAYLOAD_ALL:;
 			char *payload = pp->payload.data;
+			if (payload == NULL) {
+				break;
+			}
 			if (info->key->auto_inc) {
-				sprintf(str, "%s%d", payload, index++);
+				snprintf(str, sizeof(str), "%s%d", payload, index++);
 			} else {
-				sprintf(str, "%s", payload);
+				snprintf(str, sizeof(str), "%s", payload);
 			}
 			break;
 		case RULE_PAYLOAD_FIELD:;
@@ -518,20 +537,25 @@ generate_key(rule *info, int j, nano_work *work)
 				jp = cJSON_GetObjectItem(jp, info->key->key_arr[k]);
 			}
 
+			// the payload may not be JSON or the key path may not resolve
+			if (jp == NULL) {
+				break;
+			}
+
 			switch (jp->type)
 			{
 			case cJSON_String:
 				if (info->key->auto_inc) {
-					sprintf(str, "%s%d", cJSON_GetStringValue(jp), index++);
+					snprintf(str, sizeof(str), "%s%d", cJSON_GetStringValue(jp), index++);
 				} else {
-					sprintf(str, "%s", cJSON_GetStringValue(jp));
+					snprintf(str, sizeof(str), "%s", cJSON_GetStringValue(jp));
 				}
 				break;
 			case cJSON_Number:
 				if (info->key->auto_inc) {
-					sprintf(str, "%ld%d", (long) cJSON_GetNumberValue(jp), index++);
+					snprintf(str, sizeof(str), "%ld%d", (long) cJSON_GetNumberValue(jp), index++);
 				} else {
-					sprintf(str, "%ld", (long) cJSON_GetNumberValue(jp));
+					snprintf(str, sizeof(str), "%ld", (long) cJSON_GetNumberValue(jp));
 				}
 				break;
 			default:
@@ -768,6 +792,7 @@ static char *sql_escape(const char *s)
 
     size_t len = strlen(s);
     char *out = malloc(len * 2 + 1);
+    if (out == NULL) return NULL;
     char *p = out;
 
     for (; *s; s++) {
@@ -792,7 +817,7 @@ rule_table_name(rule *r)
 }
 
 static char *
-compose_sql_clause(rule *info, char *key, char *value,
+compose_sql_clause(rule *info, sbuf_t *key, sbuf_t *value,
                    bool is_need_set, int j, nano_work *work)
 {
     if (!info || !work || !info->flag[j])
@@ -830,21 +855,30 @@ compose_sql_clause(rule *info, char *key, char *value,
 		const char *topic_key = (col != NULL) ? col : "Topic";
         char *esc = sql_escape(pp->var_header.publish.topic_name.body);
     	sbuf_init(&key_sb, strlen(topic_key)+8);
-    	sbuf_init(&val_sb, strlen(esc)+8);
+    	sbuf_init(&val_sb, (esc ? strlen(esc) : 0) + 8);
         sbuf_appendf(&key_sb, "%s, ", topic_key);
-        sbuf_appendf(&val_sb, "'%s', ", esc);
-        free(esc);
+        if (esc) {
+            sbuf_appendf(&val_sb, "'%s', ", esc);
+            free(esc);
+        } else {
+            sbuf_appendf(&val_sb, "NULL, ");
+        }
         break;
     }
 
     case RULE_CLIENTID: {
 		const char *cli_id_key = (col != NULL) ? col : "Clientid";
+        // an anonymous connection carries no clientid
         char *esc = sql_escape(conn_param_get_clientid(cp));
     	sbuf_init(&key_sb, strlen(cli_id_key)+8);
-    	sbuf_init(&val_sb, strlen(esc)+8);
+    	sbuf_init(&val_sb, (esc ? strlen(esc) : 0) + 8);
         sbuf_appendf(&key_sb, "%s, ", cli_id_key);
-        sbuf_appendf(&val_sb, "'%s', ", esc);
-        free(esc);
+        if (esc) {
+            sbuf_appendf(&val_sb, "'%s', ", esc);
+            free(esc);
+        } else {
+            sbuf_appendf(&val_sb, "NULL, ");
+        }
         break;
     }
 
@@ -941,8 +975,8 @@ compose_sql_clause(rule *info, char *key, char *value,
         break;
     }
 
-    strcat(key, key_sb.buf);
-    strcat(value, val_sb.buf);
+    sbuf_append(key, key_sb.buf);
+    sbuf_append(value, val_sb.buf);
     char *ret = alter_sb.len ? nng_strdup(alter_sb.buf) : NULL;
 
     sbuf_free(&key_sb);
@@ -1017,21 +1051,30 @@ compose_sql_clause_new(rule *info, sbuf_t *key, sbuf_t *value,
 		const char *topic_key = (col != NULL) ? col : "Topic";
         char *esc = sql_escape(pp->var_header.publish.topic_name.body);
     	sbuf_init(&key_sb, strlen(topic_key)+8);
-    	sbuf_init(&val_sb, strlen(esc)+8);
+    	sbuf_init(&val_sb, (esc ? strlen(esc) : 0) + 8);
         sbuf_appendf(&key_sb, "%s, ", topic_key);
-        sbuf_appendf(&val_sb, "'%s', ", esc);
-        free(esc);
+        if (esc) {
+            sbuf_appendf(&val_sb, "'%s', ", esc);
+            free(esc);
+        } else {
+            sbuf_appendf(&val_sb, "NULL, ");
+        }
         break;
     }
 
     case RULE_CLIENTID: {
 		const char *cli_id_key = (col != NULL) ? col : "Clientid";
+        // an anonymous connection carries no clientid
         char *esc = sql_escape(conn_param_get_clientid(cp));
     	sbuf_init(&key_sb, strlen(cli_id_key)+8);
-    	sbuf_init(&val_sb, strlen(esc)+8);
+    	sbuf_init(&val_sb, (esc ? strlen(esc) : 0) + 8);
         sbuf_appendf(&key_sb, "%s, ", cli_id_key);
-        sbuf_appendf(&val_sb, "'%s', ", esc);
-        free(esc);
+        if (esc) {
+            sbuf_appendf(&val_sb, "'%s', ", esc);
+            free(esc);
+        } else {
+            sbuf_appendf(&val_sb, "NULL, ");
+        }
         break;
     }
 
@@ -1208,11 +1251,21 @@ rule_engine_insert_sqlite(rule *rules, nng_mtx *rule_mutex, size_t i, nano_work 
 	log_debug("%s", value.buf);
 
 	char *p = strrchr(key.buf, ',');
-    if (!p) return 0;
+    if (!p) {
+        sbuf_free(&key);
+        sbuf_free(&value);
+        sbuf_free(&sql_clause);
+        return 0;
+    }
     *p = ')';
-	
+
     p = strrchr(value.buf, ',');
-    if (!p) return 0;
+    if (!p) {
+        sbuf_free(&key);
+        sbuf_free(&value);
+        sbuf_free(&sql_clause);
+        return 0;
+    }
     *p = ')';
 
 	log_debug("%s", key.buf);
@@ -1261,7 +1314,6 @@ rule_engine_insert_sql(nano_work *work)
 	for (size_t i = 0; i < rule_size; i++) {
 		if (true == rules[i].enabled && rule_engine_filter(work, &rules[i])) {
 #if defined(FDB_SUPPORT)
-			char fdb_key[pp->var_header.publish.topic_name.len+sizeof(uint64_t)];
 			if (RULE_ENG_FDB & work->config->rule_eng.option && RULE_FORWORD_FDB == rules[i].forword_type) {
 				cJSON *jso = NULL;
 				jso        = cJSON_CreateObject();
@@ -1301,7 +1353,6 @@ rule_engine_insert_sql(nano_work *work)
 				}
 
 				fdb_future_destroy(f);
-				fdb_transaction_clear(tr, fdb_key, strlen(fdb_key));
 				fdb_transaction_destroy(tr);
 
 				free(key);
@@ -1340,10 +1391,13 @@ rule_engine_insert_sql(nano_work *work)
 
 #if defined(SUPP_MYSQL)
 			if (RULE_ENG_MDB & work->config->rule_eng.option && RULE_FORWORD_MYSQL == rules[i].forword_type) {
-				char sql_clause[1024] = "INSERT INTO ";
-				char key[128]         = { 0 };
-				snprintf(key, 128, "%s (", rules[i].mysql->table);
-				char value[800]       = "VALUES (";
+				sbuf_t key, value, sql_clause;
+				sbuf_init(&key,   256);
+				sbuf_init(&value, 512);
+				sbuf_init(&sql_clause, 1024);
+				sbuf_appendf(&key, "%s (", rules[i].mysql->table);
+				sbuf_append(&value, "VALUES (");
+				sbuf_append(&sql_clause, "INSERT INTO ");
 				for (size_t j = 0; j < 9; j++) {
 					nng_mtx_lock(rule_mutex);
 					if (true == is_first_time_mysql) {
@@ -1351,7 +1405,7 @@ rule_engine_insert_sql(nano_work *work)
 					}
 					char *ret =
 					    compose_sql_clause(&rules[i],
-					        key, value, is_need_set_mysql, j, work);
+					        &key, &value, is_need_set_mysql, j, work);
 
 					if (ret && is_need_set_mysql) {
 						is_need_set_mysql = false;
@@ -1387,22 +1441,27 @@ rule_engine_insert_sql(nano_work *work)
 
 				
 
-				log_debug("%s", key);
-				log_debug("%s", value);
-				char *p = strrchr(key, ',');
-				*p      = ')';
-				p       = strrchr(value, ',');
-				*p      = ')';
-				strcat(sql_clause, key);
-				strcat(sql_clause, value);
-				strcat(sql_clause, ";");
+				log_debug("%s", key.buf);
+				log_debug("%s", value.buf);
+				char *p = strrchr(key.buf, ',');
+				char *p2 = strrchr(value.buf, ',');
+				if (p != NULL && p2 != NULL) {
+					*p  = ')';
+					*p2 = ')';
+					sbuf_append(&sql_clause, key.buf);
+					sbuf_append(&sql_clause, value.buf);
+					sbuf_append(&sql_clause, ";");
 
-				log_debug("%s", sql_clause);
-  				if (mysql_query(rules[i].mysql->conn, sql_clause)) {
-  					fprintf(stderr, "%s\n", mysql_error(rules[i].mysql->conn));
-  					mysql_close(rules[i].mysql->conn);
-  					exit(1);
-  				}
+					log_debug("%s", sql_clause.buf);
+					if (mysql_query(rules[i].mysql->conn, sql_clause.buf)) {
+						fprintf(stderr, "%s\n", mysql_error(rules[i].mysql->conn));
+						mysql_close(rules[i].mysql->conn);
+						exit(1);
+					}
+				}
+				sbuf_free(&key);
+				sbuf_free(&value);
+				sbuf_free(&sql_clause);
 			}
 #endif
 
@@ -1424,10 +1483,13 @@ rule_engine_insert_sql(nano_work *work)
 					work->pgconn = conn;
 				}
 
-				char sql_clause[1024] = "INSERT INTO ";
-				char key[128]         = { 0 };
-				snprintf(key, 128, "%s (", rules[i].postgresql->table);
-				char value[800]       = "VALUES (";
+				sbuf_t key, value, sql_clause;
+				sbuf_init(&key,   256);
+				sbuf_init(&value, 512);
+				sbuf_init(&sql_clause, 1024);
+				sbuf_appendf(&key, "%s (", rules[i].postgresql->table);
+				sbuf_append(&value, "VALUES (");
+				sbuf_append(&sql_clause, "INSERT INTO ");
 				for (size_t j = 0; j < 9; j++) {
 
 					nng_mtx_lock(rule_mutex);
@@ -1437,7 +1499,7 @@ rule_engine_insert_sql(nano_work *work)
 					}
 					char *ret =
 					    compose_sql_clause(&rules[i],
-					        key, value, is_need_set_postgresql, j, work);
+					        &key, &value, is_need_set_postgresql, j, work);
 
 					if (ret && is_need_set_postgresql) {
 						is_need_set_postgresql = false;
@@ -1483,31 +1545,34 @@ rule_engine_insert_sql(nano_work *work)
 				/* log_debug("%s", key); */
 				/* log_debug("%s", value); */
 
-				char *p = strrchr(key, ',');
-				*p      = ')';
-				p       = strrchr(value, ',');
-				*p      = ')';
-				strcat(sql_clause, key);
-				strcat(sql_clause, value);
-				strcat(sql_clause, ";");
+				char *p = strrchr(key.buf, ',');
+				char *p2 = strrchr(value.buf, ',');
+				if (p != NULL && p2 != NULL) {
+					*p  = ')';
+					*p2 = ')';
+					sbuf_append(&sql_clause, key.buf);
+					sbuf_append(&sql_clause, value.buf);
+					sbuf_append(&sql_clause, ";");
 
-				log_debug("%s", sql_clause);
+					log_debug("%s", sql_clause.buf);
 
-				PGresult *res = PQexec(work->pgconn, sql_clause);
-			    log_debug("Postgresql res: %d\n", PQresultStatus(res));
+					PGresult *res = PQexec(work->pgconn, sql_clause.buf);
+						log_debug("Postgresql res: %d\n", PQresultStatus(res));
 
-  				if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-				    log_debug("Postgresql error %s\n", PQerrorMessage(work->pgconn));
-  					fprintf(stderr, "Postgresql error %s\n", PQerrorMessage(work->pgconn));
-                    PQclear(res);
-  					PQfinish(work->pgconn);
-  					exit(1);
-  				}
+						if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+							log_debug("Postgresql error %s\n", PQerrorMessage(work->pgconn));
+							fprintf(stderr, "Postgresql error %s\n", PQerrorMessage(work->pgconn));
+							PQclear(res);
+							PQfinish(work->pgconn);
+							exit(1);
+						}
 
-				PQclear(res);
-
-
-			}
+						PQclear(res);
+				}
+				sbuf_free(&key);
+				sbuf_free(&value);
+				sbuf_free(&sql_clause);
+				}
 #endif
 
 #if defined(SUPP_TIMESCALEDB)
@@ -1527,10 +1592,13 @@ rule_engine_insert_sql(nano_work *work)
 					work->tsconn = conn;
 				}
 
-				char sql_clause[1024] = "INSERT INTO ";
-				char key[128]         = { 0 };
-				snprintf(key, 128, "%s (", rules[i].timescaledb->table);
-				char value[800]       = "VALUES (";
+				sbuf_t key, value, sql_clause;
+				sbuf_init(&key,   256);
+				sbuf_init(&value, 512);
+				sbuf_init(&sql_clause, 1024);
+				sbuf_appendf(&key, "%s (", rules[i].timescaledb->table);
+				sbuf_append(&value, "VALUES (");
+				sbuf_append(&sql_clause, "INSERT INTO ");
 				for (size_t j = 0; j < 9; j++) {
 
 					nng_mtx_lock(rule_mutex);
@@ -1540,7 +1608,7 @@ rule_engine_insert_sql(nano_work *work)
 					}
 					char *ret =
 					    compose_sql_clause(&rules[i],
-					        key, value, is_need_set_timescaledb, j, work);
+					        &key, &value, is_need_set_timescaledb, j, work);
 
 					if (ret && is_need_set_timescaledb) {
 						is_need_set_timescaledb = false;
@@ -1585,28 +1653,33 @@ rule_engine_insert_sql(nano_work *work)
 				/* log_debug("%s", key); */
 				/* log_debug("%s", value); */
 
-				char *p = strrchr(key, ',');
-				*p      = ')';
-				p       = strrchr(value, ',');
-				*p      = ')';
-				strcat(sql_clause, key);
-				strcat(sql_clause, value);
-				strcat(sql_clause, ";");
+				char *p = strrchr(key.buf, ',');
+				char *p2 = strrchr(value.buf, ',');
+				if (p != NULL && p2 != NULL) {
+					*p  = ')';
+					*p2 = ')';
+					sbuf_append(&sql_clause, key.buf);
+					sbuf_append(&sql_clause, value.buf);
+					sbuf_append(&sql_clause, ";");
 
-				log_debug("%s", sql_clause);
+					log_debug("%s", sql_clause.buf);
 
-				PGresult *res = PQexec(work->tsconn, sql_clause);
-			    log_debug("timescaledb res: %d\n", PQresultStatus(res));
+					PGresult *res = PQexec(work->tsconn, sql_clause.buf);
+					log_debug("timescaledb res: %d\n", PQresultStatus(res));
 
-  				if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-				    log_debug("timescaledb error %s\n", PQerrorMessage(work->tsconn));
-  					fprintf(stderr, "timescaledb error %s\n", PQerrorMessage(work->tsconn));
-                    PQclear(res);
-  					PQfinish(work->tsconn);
-  					exit(1);
-  				}
+					if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+						log_debug("timescaledb error %s\n", PQerrorMessage(work->tsconn));
+						fprintf(stderr, "timescaledb error %s\n", PQerrorMessage(work->tsconn));
+						PQclear(res);
+						PQfinish(work->tsconn);
+						exit(1);
+					}
 
-				PQclear(res);
+					PQclear(res);
+				}
+				sbuf_free(&key);
+				sbuf_free(&value);
+				sbuf_free(&sql_clause);
 			}
 #endif
 
@@ -1739,6 +1812,25 @@ handle_pub(nano_work *work, struct pipe_content *pipe_ct, uint8_t proto,
 			len = work->pub_packet->var_header.publish.topic_name.len;
 		}
 	}
+
+#if defined(SUPP_PLUGIN)
+	// A plugin that owns authorisation is asked first, so that replacing the
+	// ACL engine does not mean editing every rule file, and so that a message
+	// that will be dropped anyway never reaches the HTTP acl check. The topic
+	// tested is the mount-point prefixed one, which is what the client will
+	// really be seen to publish.
+	if (!is_event) {
+		int hook_rv = nano_plugin_acl_check(work->cparam, work->config,
+		    NANO_HOOK_ACL_PUB, topic);
+
+		if (hook_rv == NANO_HOOK_DISCONNECT) {
+			return BANNED;
+		}
+		if (hook_rv == NANO_HOOK_DENIED) {
+			return NNG_MQTT_SUCCESS;
+		}
+	}
+#endif
 
 #ifdef ACL_SUPP
 	if (work->config != NULL && work->config->auth_http.enable) {

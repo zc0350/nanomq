@@ -378,9 +378,15 @@ server_cb(void *arg)
 			smsg = work->msg;
 			work->msg_ret = NULL;
 
-			if ((work->sub_pkt = nng_alloc(sizeof(packet_subscribe))) == NULL)
-				log_error("nng_alloc");
-			memset(work->sub_pkt, '\0', sizeof(packet_subscribe));
+			if ((work->sub_pkt = nng_zalloc(sizeof(packet_subscribe))) ==
+			    NULL) {
+				log_error("nng_zalloc");
+				nng_msg_free(work->msg);
+				work->msg   = NULL;
+				work->state = RECV;
+				nng_ctx_recv(work->ctx, work->aio);
+				break;
+			}
 
 			if ((rv = decode_sub_msg(work)) != 0 ||
 			    (rv = sub_ctx_handle(work)) != 0) {
@@ -467,9 +473,15 @@ server_cb(void *arg)
 			break;
 		} else if (work->flag == CMD_UNSUBSCRIBE) {
 			smsg = work->msg;
-			if ((work->unsub_pkt = nng_alloc(
-			         sizeof(packet_unsubscribe))) == NULL)
-				log_error("nng_alloc");
+			if ((work->unsub_pkt = nng_zalloc(
+			         sizeof(packet_unsubscribe))) == NULL) {
+				log_error("nng_zalloc");
+				nng_msg_free(work->msg);
+				work->msg   = NULL;
+				work->state = RECV;
+				nng_ctx_recv(work->ctx, work->aio);
+				break;
+			}
 
 			if ((rv = decode_unsub_msg(work)) != 0 ||
 			    (rv = unsub_ctx_handle(work)) != 0) {
@@ -1037,6 +1049,28 @@ broker(conf *nanomq_conf)
 	nmq_acl_hazard_init(nanomq_conf);
 #endif
 
+#if defined(SUPP_PLUGIN)
+	// Plugins load here rather than further down next to the message that
+	// reports the broker as started: listeners are open long before that
+	// point, so a CONNECT arriving in between would be decided by the built-in
+	// check this plugin exists to replace. And a plugin that refuses to load
+	// stops the broker instead of serving without the policy it carries, which
+	// is the one failure an operator must never get silently.
+	for (i = 0; i < nanomq_conf->plugin.path_sz; i++) {
+		rv = plugin_register(nanomq_conf->plugin.libs[i]->path);
+		if (rv != 0) {
+			log_error("plugin_register error:%s : %d", nanomq_conf->plugin.libs[i]->path, rv);
+			NANO_NNG_FATAL("plugin_register", rv);
+		}
+	}
+	// Only after the registrations: the CONNECT seam replaces the built-in
+	// check rather than adding to it, so nano_plugin_hooks_install() hands it
+	// over only when a plugin really owns HOOK_BASIC_AUTH. A broker that starts
+	// with no "plugin { libs }" then decides connections exactly as an
+	// unpatched one does, with allow_anonymous and auth.password still in
+	// effect.
+	nano_plugin_hooks_install();
+#endif
 
 #if defined(SUPP_RULE_ENGINE)
 	conf_rule *cr = &nanomq_conf->rule_eng;
@@ -1492,12 +1526,8 @@ broker(conf *nanomq_conf)
 	}
 
 #if defined(SUPP_PLUGIN)
-	for (i = 0; i < nanomq_conf->plugin.path_sz; i++) {
-		rv = plugin_register(nanomq_conf->plugin.libs[i]->path);
-		if (rv != 0) {
-			log_error("plugin_register error:%s : %d", nanomq_conf->plugin.libs[i]->path, rv);
-		}
-	}
+	// Plugin loading moved to the top of broker(), before the first listener
+	// is opened; see nano_plugin_hooks_install() there.
 #endif
 	printf("NanoMQ Broker is started successfully!\n");
 
@@ -1975,8 +2005,16 @@ broker_start(int argc, char **argv)
 
 	if (nanomq_conf->conf_file == NULL && strlen(nanomq_conf->exec_path) > 7) {
 		char conf_path[512] = {'\0'};
-		memcpy(conf_path, nanomq_conf->exec_path, strlen(nanomq_conf->exec_path) - 7); // only want folder
-		strcat(conf_path, CONF_NAME);
+		// only want folder; bound both copies so a long exec_path cannot
+		// overflow conf_path
+		int n = snprintf(conf_path, sizeof(conf_path), "%.*s%s",
+		    (int) (strlen(nanomq_conf->exec_path) - 7),
+		    nanomq_conf->exec_path, CONF_NAME);
+		if (n < 0 || (size_t) n >= sizeof(conf_path)) {
+			fprintf(stderr, "Default config path too long, quit\n");
+			conf_fini(nanomq_conf);
+			exit(1);
+		}
 		nanomq_conf->conf_file = strdup(conf_path);
 		printf("Config file is not specified, using default config file: %s\n", nanomq_conf->conf_file);
 	} else {

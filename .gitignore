@@ -40,3 +40,10 @@ cmake-build-debug/
 
 # Generate files
 fdb_version.h
+
+# local runtime dlls
+libatomic-1.dll
+libwinpthread-1.dll
+
+# zcode session files
+.zcode/
