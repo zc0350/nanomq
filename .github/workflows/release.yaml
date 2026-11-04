@@ -1,0 +1,167 @@
+name: Build and release (cong)
+
+# Fork-friendly pipeline: none of the upstream workflows run outside
+# nanomq/nanomq (they are all guarded by `if: github.repository == ...`).
+# This one has no repository guard.
+#
+#   push to master / manual dispatch  -> build, test, upload workflow artifacts
+#   tag (v*, 0.*, *-cong*)            -> additionally create a GitHub Release
+#                                        with the packaged binaries
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*'
+      - '0.*'
+      - '*-cong*'
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Release build: plugin framework + ACL support + TLS, and nothing else that
+  # widens the attack surface (rule engine / DB backends / JWT stay off).
+  CMAKE_FLAGS: >-
+    -DCMAKE_BUILD_TYPE=Release
+    -DENABLE_PLUGIN=ON
+    -DENABLE_ACL=ON
+    -DNNG_ENABLE_TLS=ON
+    -DBUILD_CLIENT=OFF
+    -DBUILD_NANOMQ_CLI=OFF
+    -DBUILD_BENCH=OFF
+    -DBUILD_APP_LIB=OFF
+
+jobs:
+  test:
+    name: Rule engine unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libssl-dev
+
+      - name: Apply the NanoNNG connect-hook patch
+        run: |
+          git -C nng apply --check "$GITHUB_WORKSPACE/cong/patch/01-nng-connect-hook.patch"
+          git -C nng apply "$GITHUB_WORKSPACE/cong/patch/01-nng-connect-hook.patch"
+
+      - name: Configure
+        run: cmake -S . -B build ${{ env.CMAKE_FLAGS }}
+
+      - name: Build the broker and the plugin
+        run: cmake --build build -j $(nproc) --target nanomq cong_nanomq cong_test
+
+      - name: Run rule engine unit tests
+        run: ./build/cong/cong_test
+
+      - name: Validate sample rule files
+        run: |
+          python3 cong/tools/cong_pwgen.py validate cong/rules/auth.jsonl cong/rules/acl.jsonl
+
+      - name: Assert the plugin needs only the host hook symbol
+        run: |
+          nm -u build/cong/cong_nanomq.so
+          HOST=$(nm -u build/cong/cong_nanomq.so | awk '{print $2}' | grep -c '^plugin_hook_register$')
+          echo "host-provided symbols: $HOST"
+          [ "$HOST" -eq 1 ]
+
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libssl-dev
+
+      - name: Apply the NanoNNG connect-hook patch
+        run: |
+          git -C nng apply --check "$GITHUB_WORKSPACE/cong/patch/01-nng-connect-hook.patch"
+          git -C nng apply "$GITHUB_WORKSPACE/cong/patch/01-nng-connect-hook.patch"
+
+      - name: Configure
+        run: cmake -S . -B build ${{ env.CMAKE_FLAGS }}
+
+      - name: Build
+        run: cmake --build build -j $(nproc) --target nanomq cong_nanomq
+
+      - name: Package
+        run: |
+          VERSION="${{ github.ref_name }}"
+          if ! [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+ ]]; then
+            VERSION="0.25.7+$(git rev-parse --short HEAD)"
+          fi
+          NAME="nanomq-cong-${VERSION}-linux-${{ matrix.arch }}"
+          mkdir -p pack/${NAME}
+          cp build/nanomq/nanomq pack/${NAME}/
+          cp build/cong/cong_nanomq.so pack/${NAME}/
+          cp cong/conf/nanomq.conf pack/${NAME}/
+          cp -r cong/rules pack/${NAME}/rules
+          cp cong/deploy/nanomq.service pack/${NAME}/
+          cp cong/README.md pack/${NAME}/
+          cp README.md pack/${NAME}/UPSTREAM-README.md
+          tar -czf ${NAME}.tar.gz ${NAME}
+          sha256sum ${NAME}.tar.gz > ${NAME}.tar.gz.sha256
+          echo "artifact_name=${NAME}" >> $GITHUB_ENV
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.artifact_name }}
+          path: |
+            ${{ env.artifact_name }}.tar.gz
+            ${{ env.artifact_name }}.tar.gz.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Create the release and upload packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            dist/*
