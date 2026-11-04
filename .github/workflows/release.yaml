@@ -65,9 +65,10 @@ jobs:
           if cmake -S . -B build ${{ env.CMAKE_FLAGS }} 2>&1 | tee configure.log; then
             echo "configure ok"
           else
-            echo "cmake configure failed, dumping the tail as annotations"
-            tail -n 30 configure.log | tr -d '\r' | cut -c1-400 |
-              while IFS= read -r line; do echo "::error::CONFIGURE: $line"; done
+            echo "cmake configure failed, dumping the error context as annotations"
+            { grep -m1 -B3 -A25 "CMake Error" configure.log || tail -n 15 configure.log; } |
+              tr -d '\r' | cut -c1-380 | head -n 9 |
+              while IFS= read -r line; do echo "::error::CFG: $line"; done
             exit 1
           fi
 
