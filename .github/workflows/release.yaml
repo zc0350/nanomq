@@ -73,10 +73,12 @@ jobs:
           sudo make install
           sudo ldconfig
 
-      - name: Apply the NanoNNG connect-hook patch
+      - name: Apply the NanoNNG patches (connect hook + client IP v6)
         run: |
           git -C nng apply --check "$GITHUB_WORKSPACE/cong/patch/01-nng-connect-hook.patch"
           git -C nng apply "$GITHUB_WORKSPACE/cong/patch/01-nng-connect-hook.patch"
+          git -C nng apply --check "$GITHUB_WORKSPACE/cong/patch/02-nng-client-ip-v6.patch"
+          git -C nng apply "$GITHUB_WORKSPACE/cong/patch/02-nng-client-ip-v6.patch"
 
       - name: Configure
         run: |
@@ -165,10 +167,12 @@ jobs:
           sudo make install
           sudo ldconfig
 
-      - name: Apply the NanoNNG connect-hook patch
+      - name: Apply the NanoNNG patches (connect hook + client IP v6)
         run: |
           git -C nng apply --check "$GITHUB_WORKSPACE/cong/patch/01-nng-connect-hook.patch"
           git -C nng apply "$GITHUB_WORKSPACE/cong/patch/01-nng-connect-hook.patch"
+          git -C nng apply --check "$GITHUB_WORKSPACE/cong/patch/02-nng-client-ip-v6.patch"
+          git -C nng apply "$GITHUB_WORKSPACE/cong/patch/02-nng-client-ip-v6.patch"
 
       - name: Configure
         run: |

@@ -23,6 +23,7 @@ cong/
   conf/nanomq.conf    带 plugin 块的 broker 配置样例
   deploy/nanomq.service  systemd 单元
   patch/01-nng-connect-hook.patch  NanoNNG 的 CONNECT 钩子补丁（构建期打）
+  patch/02-nng-client-ip-v6.patch  NanoNNG 客户端 IP 对 IPv6/双栈的支持（构建期打）
 ```
 
 ## 接线方式（为什么有补丁）
@@ -56,6 +57,8 @@ git submodule update --init --recursive
 # nng 是 submodule，补丁在构建前打入（CI 同样这样做）
 git -C nng apply --check  cong/patch/01-nng-connect-hook.patch
 git -C nng apply          cong/patch/01-nng-connect-hook.patch
+git -C nng apply --check  cong/patch/02-nng-client-ip-v6.patch
+git -C nng apply          cong/patch/02-nng-client-ip-v6.patch
 
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
       -DENABLE_PLUGIN=ON -DENABLE_ACL=ON -DNNG_ENABLE_TLS=ON \
@@ -126,8 +129,13 @@ SIGHUP 不管用（NanoMQ 收 SIGHUP 只重开日志）。`nanomq reload` 在刷
 
 ## NanoMQ 侧的已知差异与限制
 
-- **IPv4-only 的 `ip` 规则**：协议栈只在 `AF_INET` 时填客户端地址，IPv6 连接拿到
-  空串 ⇒ 带 `ip` 约束的规则对 IPv6 永不命中（拒绝方向，安全但要知道）。
+- **客户端 IP 文本的格式**（补丁 02，IPv4/IPv6 都支持，规则里的 `ip` 按此书写）：
+  IPv4 客户端是点分十进制（`10.0.0.7`）；原生 IPv6 客户端是 8 组 4 位十六进制的
+  零填充展开形式（`2001:0db8:0000:...:0001`，不是 RFC 5952 压缩形式）——确定性
+  文本，原生 ACL 的字符串比较才能依赖它，cong 插件的 `ip` 规则用 CIDR 匹配所以
+  两种写法都接受（`::1/128`、`2001:db8::/32` 均可）；IPv4 客户端经 `[::]` 双栈
+  监听连入时（内核上报为 `::ffff:a.b.c.d`）自动还原成点分十进制，与原生 IPv4
+  监听看到的一致。
 - **证书登录**：`peer_cert_as_username` 换出的用户名会跳过登录 hook（身份已由
   TLS 验证），但仍受 ACL hook 约束。
 - **共享订阅**：hook 拿到的是原样 filter（含 `$share/组/主题`），规则要用
@@ -148,8 +156,11 @@ SIGHUP 不管用（NanoMQ 收 SIGHUP 只重开日志）。`nanomq reload` 在刷
 2. `handle_pub()` / `sub_ctx_handle()` 里 mount-point 重写与插件 hook 的先后
    （hook 必须问在**重写之后**的主题上）。
 3. `plugin.c` 的 `plugin_hook_call()` 未注册时是否仍返回 0（改成非 0 = 全拒）。
-4. `conf_ver2.c` 的 `auth { no_match / deny_action }` 是否仍在 `#ifdef ACL_SUPP` 下。
-5. `ENABLE_EXPORTS/-rdynamic` 是否仍必要（若 nanomq 改为显式导出表则换 version
+4. nng `nano_pipe_start()` 里 `nano_conn_param_set_ip_addr()` 的调用点是否仍在
+   CONNECT 认证 hook 之前（`ip` 约束靠它先填好地址），`server_port` 的 v6 分支
+   （`nano_pipe_get_local_port6`）是否还在。
+5. `conf_ver2.c` 的 `auth { no_match / deny_action }` 是否仍在 `#ifdef ACL_SUPP` 下。
+6. `ENABLE_EXPORTS/-rdynamic` 是否仍必要（若 nanomq 改为显式导出表则换 version
    script）；nng vendored cJSON 是否变版本（变了要重编插件）。
 
 ## 上机要做的第一件事
@@ -165,6 +176,10 @@ mqttcli pub -h 127.0.0.1 -u dashboard -P <pwgen 算出的口令> -t "$SYS/broker
 # 5. reload：改规则后 nanomq reload 立即生效；把文件改坏再 reload，旧规则应继续生效
 # 6. seam 回归：注释掉 plugin.libs 重启，日志应出现 "no plugin owns CONNECT
 #    authentication ..."，此时 allow_anonymous=false 要能拒匿名连接
+# 7. IPv6（双栈监听 nmq-tcp://[::]:1883）：
+#    ::1 连接 + 规则 {"ip":"::1/128"} 应命中；127.0.0.1 经双栈连入 +
+#    规则 {"ip":"127.0.0.1"} 应命中（::ffff: 已还原）；CONG_DEBUG=1 日志
+#    里能看到判定行，IPv6 地址为 8 组零填充形式
 ```
 
 口令生成：
