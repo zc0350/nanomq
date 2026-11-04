@@ -201,6 +201,8 @@ jobs:
           if ! [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+ ]]; then
             VERSION="0.25.7+$(git rev-parse --short HEAD)"
           fi
+          # keep release-asset URLs simple: no '+' in file names
+          VERSION="${VERSION//+/_}"
           NAME="nanomq-cong-${VERSION}-linux-${{ matrix.arch }}"
           mkdir -p pack/${NAME}/lib
           cp build/nanomq/nanomq pack/${NAME}/
@@ -216,7 +218,7 @@ jobs:
           cp cong/deploy/nanomq.service pack/${NAME}/
           cp cong/README.md pack/${NAME}/
           cp README.md pack/${NAME}/UPSTREAM-README.md
-          tar -czf ${NAME}.tar.gz ${NAME}
+          tar -czf ${NAME}.tar.gz -C pack ${NAME}
           sha256sum ${NAME}.tar.gz > ${NAME}.tar.gz.sha256
           echo "artifact_name=${NAME}" >> $GITHUB_ENV
 
