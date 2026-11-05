@@ -69,9 +69,12 @@ needed=$(for bin in nanomq cong_nanomq.so; do
          done | LC_ALL=C sort -u)
 for lib in $needed; do
     case " $ALLOWED_LIBS " in
-        *" $lib "*) ;;
-        *) die "$lib is needed at runtime but not in Depends" ;;
+        *" $lib "*) continue ;;
     esac
+    # aarch64 executables list the dynamic loader itself; it ships in libc6,
+    # like libc.so.6 does, so any architecture's loader is covered
+    case "$lib" in ld-linux-*.so.*) continue ;; esac
+    die "$lib is needed at runtime but not in Depends"
 done
 
 required=$(objdump -T "$STAGE/nanomq" "$STAGE/cong_nanomq.so" |
