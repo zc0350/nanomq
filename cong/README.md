@@ -171,6 +171,15 @@ SIGHUP 不管用（NanoMQ 收 SIGHUP 只重开日志）。`nanomq reload` 在刷
 
 ## NanoMQ 侧的已知差异与限制
 
+- **拒绝在线上长什么样**（上游 NanoMQ 的既有行为，插件沿用；实测于 Debian 13 上
+  装的 0.25.7-cong.3）：被拒的 CONNECT 是「直接断开、不发 CONNACK」——客户端看到
+  的是连接被关，而不是 CONNACK 里的失败码（nano_pipe_start 把 CONNACK 排好队之后
+  pipe 先被关掉，包没发出去；同一路径对 3.1.1 与 5.0 都是 `goto end`）。而
+  `deny_action = disconnect` 下的拒绝是先发一个 DISCONNECT（reason 0x87 not
+  authorised）再断连——对 3.1.1 客户端来说这个包是 MQTT 5 的形状（上游
+  `nano_dismsg_composer` 的既有做法，原生 ACL 拒绝走同一条路）。所以判「连上了
+  没有」要看 CONNACK 有没有来，判「消息/订阅有没有被拒」要看有没有 0x87 的
+  DISCONNECT 或者连接被关。
 - **客户端 IP 文本的格式**（补丁 02，IPv4/IPv6 都支持，规则里的 `ip` 按此书写）：
   IPv4 客户端是点分十进制（`10.0.0.7`）；原生 IPv6 客户端是 8 组 4 位十六进制的
   零填充展开形式（`2001:0db8:0000:...:0001`，不是 RFC 5952 压缩形式）——确定性
@@ -214,7 +223,9 @@ SIGHUP 不管用（NanoMQ 收 SIGHUP 只重开日志）。`nanomq reload` 在刷
 export CONG_DEBUG=1
 nanomq start --conf /etc/nanomq/nanomq.conf &
 mqttcli pub -h 127.0.0.1 -u dashboard -P <pwgen 算出的口令> -t "$SYS/broker/uptime" -m hi
-# 2. 错口令应被拒（CONNACK 失败，日志 "matches no rule" 或 "password digest does not"）
+# 2. 错口令应被拒（连接被直接断开，客户端看不到 CONNACK——上游的拒绝路径就是
+#    这样，见「已知差异与限制」；broker 日志是 "matches no rule" 或
+#    "password digest does not"）
 # 3. %1 模板：abcde_aaaa 只能发 abcde/aaaa/event，发 abcde/bbbb/event 应被拒
 # 4. $SYS：非 dashboard、非 127.0.0.1 的连接订阅 "$SYS/#" 应被拒
 # 5. reload：改规则后 nanomq reload 立即生效；把文件改坏再 reload，旧规则应继续生效
