@@ -1,0 +1,115 @@
+diff --git a/src/sp/protocol/mqtt/auth_http.c b/src/sp/protocol/mqtt/auth_http.c
+index ab245d4..42eff32 100644
+--- a/src/sp/protocol/mqtt/auth_http.c
++++ b/src/sp/protocol/mqtt/auth_http.c
+@@ -377,6 +377,22 @@ char *parse_topics(topic_queue *head)
+ 	return result;
+ }
+ 
++// Append one length-prefixed field to the ACL cache key. Returns false when
++// the field does not fit in the remaining space, in which case the caller
++// must not use the cache for this request.
++static bool
++acl_cache_key_append(char *buf, size_t cap, size_t *off, const char *field)
++{
++	size_t l = strlen(field);
++	int    n = snprintf(buf + *off, cap - *off, "%zu:%s", l, field);
++
++	if (n < 0 || (size_t) n >= cap - *off) {
++		return (false);
++	}
++	*off += (size_t) n;
++	return (true);
++}
++
+ int
+ nmq_auth_http_sub_pub(
+     conn_param *cparam, bool is_sub, topic_queue *topics, conf_auth_http *conf)
+@@ -424,16 +440,37 @@ nmq_auth_http_sub_pub(
+ 	if (auth_params.ipaddress)
+ 		auth_params_ipaddress = (char*) auth_params.ipaddress;
+ 
+-	char acl_cache_k_str[1024];
+-	snprintf(acl_cache_k_str, 1024, "ACLK%s,%s,%s,%s,%s,%s",
+-		auth_params_clientid, auth_params_username, auth_params_password,
+-		auth_params.access, topic_str, auth_params_ipaddress);
+-	acl_cache_k_str[1023] = '\0'; // Avoid StackOverFlow
+-	uint32_t acl_cache_k = nanomq_siphash_32(acl_cache_k_str,
+-		strlen(acl_cache_k_str), NULL);
++	// Build the cache key with an explicit length prefix per field.
++	// Plain comma joining is ambiguous ("a,b" + "c" collides with
++	// "a" + "b,c"), and silently truncating the joined string would let a
++	// long topic share the prefix -- and therefore the cached verdict --
++	// of another request. If the key does not fit, skip the cache for
++	// this request instead of hashing a truncated one.
++	char   acl_cache_k_str[1024];
++	size_t acl_cache_k_off  = 4;
++	bool   acl_cache_usable = true;
++
++	memcpy(acl_cache_k_str, "ACLK", 4);
++	acl_cache_usable =
++	    acl_cache_key_append(acl_cache_k_str, sizeof(acl_cache_k_str),
++	        &acl_cache_k_off, auth_params_clientid) &&
++	    acl_cache_key_append(acl_cache_k_str, sizeof(acl_cache_k_str),
++	        &acl_cache_k_off, auth_params_username) &&
++	    acl_cache_key_append(acl_cache_k_str, sizeof(acl_cache_k_str),
++	        &acl_cache_k_off, auth_params_password) &&
++	    acl_cache_key_append(acl_cache_k_str, sizeof(acl_cache_k_str),
++	        &acl_cache_k_off, auth_params.access) &&
++	    acl_cache_key_append(acl_cache_k_str, sizeof(acl_cache_k_str),
++	        &acl_cache_k_off, topic_str) &&
++	    acl_cache_key_append(acl_cache_k_str, sizeof(acl_cache_k_str),
++	        &acl_cache_k_off, auth_params_ipaddress);
++	uint32_t acl_cache_k = acl_cache_usable
++	    ? nanomq_siphash_32(acl_cache_k_str, acl_cache_k_off, NULL)
++	    : 0;
+ 
+ 	if (conf->super_req.enable && conf->super_req.url) {
+-		if (conf->cache_ttl > 0 && conf->acl_cache_map != NULL) {
++		if (conf->cache_ttl > 0 && conf->acl_cache_map != NULL &&
++		    acl_cache_usable) {
+ 			nng_mtx_lock(conf->acl_cache_mtx);
+ 			void *acl_cache_v = nng_id_get(
+ 					conf->acl_cache_map, (uint64_t)acl_cache_k);
+@@ -446,9 +483,12 @@ nmq_auth_http_sub_pub(
+ 
+ 		status = send_request(conf, &conf->super_req, &auth_params);
+ 		if (status == NNG_HTTP_STATUS_OK) {
+-			if (conf->cache_ttl > 0 && conf->acl_cache_map != NULL) {
+-				log_debug("acl passed, add cache %ld, %s",
+-						acl_cache_k, acl_cache_k_str);
++			if (conf->cache_ttl > 0 && conf->acl_cache_map != NULL &&
++			    acl_cache_usable) {
++				log_debug("acl passed, add cache %u, "
++					  "clientid %s, topic %s",
++						acl_cache_k, auth_params_clientid,
++						topic_str);
+ 				nng_mtx_lock(conf->acl_cache_mtx);
+ 				nng_id_set(conf->acl_cache_map,
+ 						(uint64_t)acl_cache_k, (void*)conf);
+@@ -460,7 +500,8 @@ nmq_auth_http_sub_pub(
+ 	}
+ 
+ 	if (conf->acl_req.enable && conf->acl_req.url) {
+-		if (conf->cache_ttl > 0 && conf->acl_cache_map != NULL) {
++		if (conf->cache_ttl > 0 && conf->acl_cache_map != NULL &&
++		    acl_cache_usable) {
+ 			nng_mtx_lock(conf->acl_cache_mtx);
+ 			void *acl_cache_v = nng_id_get(
+ 					conf->acl_cache_map, (uint64_t)acl_cache_k);
+@@ -475,9 +516,12 @@ nmq_auth_http_sub_pub(
+ 		    ? NNG_HTTP_STATUS_OK
+ 		    : send_request(conf, &conf->acl_req, &auth_params);
+ 		if (status == NNG_HTTP_STATUS_OK) {
+-			if (conf->cache_ttl > 0 && conf->acl_cache_map != NULL) {
+-				log_debug("acl passed, add cache %ld, %s",
+-						acl_cache_k, acl_cache_k_str);
++			if (conf->cache_ttl > 0 && conf->acl_cache_map != NULL &&
++			    acl_cache_usable) {
++				log_debug("acl passed, add cache %u, "
++					  "clientid %s, topic %s",
++						acl_cache_k, auth_params_clientid,
++						topic_str);
+ 				nng_mtx_lock(conf->acl_cache_mtx);
+ 				nng_id_set(conf->acl_cache_map,
+ 						(uint64_t)acl_cache_k, (void*)conf);

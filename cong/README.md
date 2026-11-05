@@ -19,11 +19,13 @@ cong/
   include/cjson/      转发头，指向 nng 自带的 cJSON
   rules/              示例规则（生产上请替换成自己的）
   tools/cong_pwgen.py 口令派生 + 规则文件校验（stdlib-only）
+  tools/nng-patches.sh 补丁链校验/导出（verify / export，见「构建」）
   test/test_core.c    规则引擎单测（不需要 broker）
   conf/nanomq.conf    带 plugin 块的 broker 配置样例
   deploy/nanomq.service  systemd 单元
   patch/01-nng-connect-hook.patch  NanoNNG 的 CONNECT 钩子补丁（构建期打）
   patch/02-nng-client-ip-v6.patch  NanoNNG 客户端 IP 对 IPv6/双栈的支持（构建期打）
+  patch/03-nng-auth-http-cache-key.patch  auth_http ACL 缓存键的长度前缀化（构建期打）
 ```
 
 ## 接线方式（为什么有补丁）
@@ -54,11 +56,13 @@ NanoMQ 0.25.x 的 CONNECT 口令校验在 NanoNNG 协议栈内部（`nano_pipe_s
 
 ```sh
 git submodule update --init --recursive
-# nng 是 submodule，补丁在构建前打入（CI 同样这样做）
-git -C nng apply --check  cong/patch/01-nng-connect-hook.patch
-git -C nng apply          cong/patch/01-nng-connect-hook.patch
-git -C nng apply --check  cong/patch/02-nng-client-ip-v6.patch
-git -C nng apply          cong/patch/02-nng-client-ip-v6.patch
+# nng 是 submodule，补丁按文件名顺序在构建前打入（CI 同样这样做）
+for p in cong/patch/*.patch; do
+  git -C nng apply --check "$p" && git -C nng apply "$p"
+done
+# 校验整条补丁链对 pin 仍能正向/反向干净试打（scratch clone，不动工作树）
+sh cong/tools/nng-patches.sh verify
+```
 
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
       -DENABLE_PLUGIN=ON -DENABLE_ACL=ON -DNNG_ENABLE_TLS=ON \
@@ -162,6 +166,8 @@ SIGHUP 不管用（NanoMQ 收 SIGHUP 只重开日志）。`nanomq reload` 在刷
 5. `conf_ver2.c` 的 `auth { no_match / deny_action }` 是否仍在 `#ifdef ACL_SUPP` 下。
 6. `ENABLE_EXPORTS/-rdynamic` 是否仍必要（若 nanomq 改为显式导出表则换 version
    script）；nng vendored cJSON 是否变版本（变了要重编插件）。
+7. nng `auth_http.c` 的 `nmq_auth_http_sub_pub()` 里 ACL 缓存键是否仍是长度前缀
+   拼接、超长时跳过缓存（补丁 03）；上游若自行修好可删这个补丁。
 
 ## 上机要做的第一件事
 

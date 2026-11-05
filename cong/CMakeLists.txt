@@ -11,15 +11,25 @@
 #   tools/cong_pwgen.py password derivation + rule-file validator
 #   test/test_core.c    unit tests for the rule engine (no broker needed)
 #   conf/ deploy/       broker config with the plugin block, systemd unit
-#   patch/              the NanoNNG CONNECT-hook patch, applied to the nng
-#                       submodule at build time (nng is a git submodule, so
-#                       that one file cannot be committed in-tree)
+#   patch/              the NanoNNG patches (connect hook, client IP v6,
+#                       auth_http ACL cache key), applied to the nng submodule
+#                       at build time (nng is a git submodule, so those files
+#                       cannot be committed in-tree; cong/tools/nng-patches.sh
+#                       verifies the chain against the pin)
 #
 # The plugin .so must NOT link libnng: plugin_hook_register() is provided by
 # the nanomq process that dlopen()s it, which exports the hook registry via
 # ENABLE_EXPORTS + -rdynamic (see nanomq/CMakeLists.txt). cJSON is nng's
 # vendored copy compiled into the plugin and hidden behind -Bsymbolic, so the
 # plugin and the broker never mix two cJSON versions in one process.
+
+# NANOMQ_TESTS forces BUILD_STATIC_LIB, and nanomq/CMakeLists.txt only sets
+# ENABLE_EXPORTS/-rdynamic on the broker when it is a plain executable. A
+# static broker cannot export plugin_hook_register() to the plugin, so the
+# combination is rejected here instead of failing later at dlopen() time.
+if(NANOMQ_TESTS)
+  message(FATAL_ERROR "cong: NANOMQ_TESTS is incompatible with ENABLE_PLUGIN (BUILD_STATIC_LIB drops the broker's ENABLE_EXPORTS/-rdynamic)")
+endif()
 
 set(CONG_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cong_util.c
@@ -36,7 +46,7 @@ set(CONG_CORE_SOURCES
 set(CONG_NNG_DIR ${CMAKE_SOURCE_DIR}/nng)
 set(CONG_NNG_CJSON ${CONG_NNG_DIR}/src/supplemental/nanolib/cJSON.c)
 
-if(NOT EXISTS ${CONG_NNG_CJSON})
+if(NOT EXISTS "${CONG_NNG_CJSON}")
   message(FATAL_ERROR "cong: ${CONG_NNG_CJSON} not found - run 'git submodule update --init --recursive' first")
 endif()
 
@@ -97,14 +107,15 @@ target_include_directories(cong_test PRIVATE
     ${CONG_NNG_DIR}/include
 )
 
-set_source_files_properties(${CONG_NNG_CJSON}
-    PROPERTIES COMPILE_OPTIONS "-w")
-
 target_link_libraries(cong_test PRIVATE OpenSSL::Crypto)
 if(NOT WIN32)
   target_link_libraries(cong_test PRIVATE pthread m)
 endif()
 
+# NANOMQ_TESTS is off in every plugin build (see the guard above), so ctest is
+# not enabled at the top level; enable it here so the test is at least
+# discoverable via `ctest --test-dir build/cong`.
+enable_testing()
 add_test(NAME cong_core_test COMMAND cong_test)
 
 # -------------------------------------------------------------- install
