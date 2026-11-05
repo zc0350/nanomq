@@ -503,22 +503,23 @@ server_cb(void *arg)
 			}
 
 			bool decode_failed = false;
-			if ((rv = decode_unsub_msg(work)) != 0 ||
-			    (rv = unsub_ctx_handle(work)) != 0) {
-				log_error("unsub_handler [%d]", rv);
-				// a failed UNSUBSCRIBE must not be acked:
-				// decode may have bailed before the packet
-				// id, and an UNSUBACK for id 0 would be a
-				// protocol lie. Stay connected and keep
-				// serving the session instead.
+			// a failed decode may have bailed before the packet id,
+			// and an UNSUBACK for id 0 would be a protocol lie: do
+			// not ack that one, stay connected and keep serving the
+			// session. A failure after the decode still gets its
+			// ack - the client is waiting for it.
+			if ((rv = decode_unsub_msg(work)) != 0) {
+				log_error("decode_unsub_msg [%d]", rv);
 				decode_failed = true;
+			} else if ((rv = unsub_ctx_handle(work)) != 0) {
+				log_error("unsub_handler [%d]", rv);
 			}
-			// proxy unsub action to bridge
+			// proxy unsub action to bridge (reads unsub_pkt->node)
 			bridge_sub_handler(work);
 
-			// free unsub_pkt
-			unsub_pkt_free(work->unsub_pkt);
 			if (decode_failed) {
+				unsub_pkt_free(work->unsub_pkt);
+				work->unsub_pkt = NULL;
 				if (work->cparam != NULL) {
 					conn_param_free(work->cparam);
 					work->cparam = NULL;
@@ -532,6 +533,11 @@ server_cb(void *arg)
 
 			if (0 != (rv = encode_unsuback_msg(smsg, work)))
 				log_error("in unsuback [%d]", rv);
+
+			// free unsub_pkt: encode_unsuback_msg() reads the packet
+			// id from it, so it has to outlive the ack
+			unsub_pkt_free(work->unsub_pkt);
+			work->unsub_pkt = NULL;
 
 			nng_aio_set_prov_data(work->aio, &work->pid.id);
 			nng_aio_set_msg(work->aio, work->msg);

@@ -429,7 +429,7 @@ rule_engine_filter(nano_work *work, rule *info)
 				// dereference it.
 				payload_filter(pp, info);
 				filter = true;
-		}
+			}
 	} else {
 		// printf("MISMATCH filter: %s, topic: %s\n", info->topic,
 		// topic);

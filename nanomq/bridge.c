@@ -697,10 +697,12 @@ hybrid_tcp_client(bridge_param *bridge_arg)
 
 	if (node->enable) {
 		if (0 != (rv = nng_dialer_start(*dialer, NNG_FLAG_ALLOC))) {
-			// route through the shared cleanup: a bare return
-			// leaked the dialer and left the socket half-open
+			// deliberately no cleanup here: the label would free
+			// *new, which node->sock and bridge_arg->sock point at
+			// and which the address retry loop replaces on its next
+			// pass. The failed dialer stays with its socket.
 			log_error("nng dialer start failed %d", rv);
-			goto error;
+			return rv;
 		}
 	}
 	return 0;
@@ -1600,10 +1602,12 @@ bridge_tcp_client(nng_socket *sock, conf *config, conf_bridge_node *node, bridge
 	if (node->enable) {
 		rv = nng_dialer_start(*dialer, NNG_FLAG_NONBLOCK);
 		if (rv != 0) {
-			// route through the shared cleanup: a bare return
-			// leaked the dialer and left the socket half-open
+			// deliberately no cleanup here: *sock is the caller's
+			// socket (node->sock, still used after this returns)
+			// and node->dialer is kept for the reload path in
+			// rest_api.c to start again. Keep upstream's return.
 			log_error("nng dialer start failed %d", rv);
-			goto error;
+			return rv;
 		}
 	}
 	return 0;
