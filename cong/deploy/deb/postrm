@@ -1,0 +1,10 @@
+#!/bin/sh
+# postrm: forget the unit once the package is gone. The conffiles under
+# /etc/nanomq are only touched by dpkg on purge, which is what we want - the
+# rules the admin wrote are not ours to delete on a plain remove.
+set -e
+
+if [ -d /run/systemd/system ]; then
+    systemctl disable nanomq.service >/dev/null 2>&1 || true
+    systemctl daemon-reload || true
+fi

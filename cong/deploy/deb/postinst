@@ -1,0 +1,23 @@
+#!/bin/sh
+# postinst: make the shipped unit visible to systemd and tell the admin what
+# is still missing. The unit is deliberately neither enabled nor started: a
+# fresh install has no rule files, the plugin then denies every connection,
+# and opening 1883 on a public interface is the admin's decision, not dpkg's.
+set -e
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+fi
+
+if [ "$1" = "configure" ]; then
+    cat <<'MSG'
+nanomq-cong: 规则文件不在包里（fail closed：没有规则时插件拒绝所有连接）。
+启用步骤：
+  install -m 0640 /usr/share/doc/nanomq-cong/examples/auth.jsonl /etc/nanomq/cong_auth.jsonl
+  install -m 0640 /usr/share/doc/nanomq-cong/examples/acl.jsonl  /etc/nanomq/cong_acl.jsonl
+  # 按自己的环境改写这两个文件（口令摘要用 cong_pwgen.py 生成），然后：
+  systemctl enable --now nanomq
+规则文件路径来自 /usr/lib/systemd/system/nanomq.service 里的
+CONG_AUTH_FILE / CONG_ACL_FILE；改了路径要重启 broker。
+MSG
+fi

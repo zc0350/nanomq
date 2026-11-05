@@ -1,0 +1,12 @@
+#!/bin/sh
+# prerm: stop a broker that is running from this package before its files go
+# away. Only on remove - an upgrade replaces the binary under a running
+# process, which is ordinary Unix behaviour and leaves the restart to the
+# admin. The package never enabled the unit, so a system that never touched
+# nanomq has nothing to stop here.
+set -e
+
+if [ "$1" = "remove" ] && [ -d /run/systemd/system ] &&
+    systemctl is-active --quiet nanomq.service; then
+    systemctl stop nanomq.service || true
+fi

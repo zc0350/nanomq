@@ -23,6 +23,8 @@ cong/
   test/test_core.c    规则引擎单测（不需要 broker）
   conf/nanomq.conf    带 plugin 块的 broker 配置样例
   deploy/nanomq.service  systemd 单元
+  deploy/deb/          Debian 包的维护者脚本（postinst / prerm / postrm）
+  tools/build-deb.sh   .deb 打包（dpkg-deb 手工组装 + 构建期自检，CI 用）
   patch/01-nng-connect-hook.patch  NanoNNG 的 CONNECT 钩子补丁（构建期打）
   patch/02-nng-client-ip-v6.patch  NanoNNG 客户端 IP 对 IPv6/双栈的支持（构建期打）
   patch/03-nng-auth-http-cache-key.patch  auth_http ACL 缓存键的长度前缀化（构建期打）
@@ -76,6 +78,42 @@ python3 cong/tools/cong_pwgen.py validate cong/rules/auth.jsonl cong/rules/acl.j
 
 `cmake --install` 会装：`cong_nanomq.so` → `lib/`，`conf/nanomq.conf` 与
 `rules/*.jsonl` → `etc/nanomq/`，systemd 单元 → `share/cong-nanomq/`。
+
+## Debian 安装包
+
+Release 里每个架构除了 tar.gz 还有 `nanomq-cong_<版本>_<架构>.deb`（amd64 /
+arm64）。二进制与 tar.gz 里的完全一样，只是按 Debian 的目录规范摆好：
+
+| 路径 | 内容 |
+| --- | --- |
+| `/usr/bin/nanomq` | broker（含补丁） |
+| `/usr/lib/nanomq/cong_nanomq.so` | 策略插件 |
+| `/etc/nanomq/nanomq.conf` | 配置样例（conffile，升级不会覆盖你改过的） |
+| `/usr/lib/systemd/system/nanomq.service` | systemd 单元（路径已改成 `/usr/...`） |
+| `/usr/share/doc/nanomq-cong/` | 本文档、`copyright`、`examples/*.jsonl` 示例规则 |
+
+```sh
+apt install ./nanomq-cong_0.25.7-cong.3_amd64.deb      # 或 dpkg -i
+install -m 0640 /usr/share/doc/nanomq-cong/examples/auth.jsonl /etc/nanomq/cong_auth.jsonl
+install -m 0640 /usr/share/doc/nanomq-cong/examples/acl.jsonl  /etc/nanomq/cong_acl.jsonl
+# 按自己的环境改写这两个文件（口令摘要用 cong_pwgen.py 生成），然后：
+systemctl enable --now nanomq
+```
+
+要点：
+
+- **依赖**：`libc6 (>= 2.38)`（Ubuntu 24.04 / Debian 13 起）与 `libssl3t64`
+  ——插件用系统的 `libcrypto.so.3` 算摘要。MbedTLS 是静态链进 broker 的，
+  所以不依赖系统 mbedtls，包里也没有随附的 `.so`。
+- **不随包发规则文件**：没有 `/etc/nanomq/cong_auth.jsonl` 时插件拒绝所有连接
+  （fail closed）；示例规则在 doc 目录里，用不用、怎么改由你决定。
+- **不自动 enable/start**：装完只 `systemctl daemon-reload`，是否把 1883 对外
+  开放是管理员的事，启用步骤 postinst 会打印一遍。
+- 卸载 `dpkg -r nanomq-cong`：停掉正在跑的服务，`/etc/nanomq` 下的规则文件
+  保持不动（那是管理员自己放的，只有 `dpkg -P` 会连 conffile 一起删）。
+- 打包脚本 `cong/tools/build-deb.sh` 用 `dpkg-deb` 手工组装（不需要 debhelper
+  和额外构建依赖），并做构建期自检：二进制真的只需要 `libc`/`libcrypto`、需要的
+  glibc 版本与 control 里的 Depends 一致、unit/conf 里的路径改写失配即报错。
 
 ## 配置
 

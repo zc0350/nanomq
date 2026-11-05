@@ -5,8 +5,9 @@ name: Build and release (cong)
 # This one has no repository guard.
 #
 #   push to master / manual dispatch  -> build, test, upload workflow artifacts
+#                                        (tarball + Debian package per arch)
 #   tag (v*, 0.*, *-cong*)            -> additionally create a GitHub Release
-#                                        with the packaged binaries
+#                                        with the same files as assets
 #
 # Actions are pinned by commit SHA with the release in a trailing comment,
 # same as the upstream workflows: a tag is mutable, a SHA is not. The pinned
@@ -37,8 +38,9 @@ permissions:
 env:
   # Release build: plugin framework + ACL support + TLS, and nothing else that
   # widens the attack surface (rule engine / DB backends / JWT stay off).
-  # The rpath points at ./lib next to the binary so the bundled MbedTLS
-  # libraries in the release tarball are found without LD_LIBRARY_PATH.
+  # The rpath points at ./lib next to the binary so libraries dropped into a
+  # tarball's lib/ are found without LD_LIBRARY_PATH; nothing is bundled today
+  # (MbedTLS is linked statically into the broker).
   CMAKE_FLAGS: >-
     -DCMAKE_BUILD_TYPE=Release
     -DENABLE_PLUGIN=ON
@@ -228,15 +230,13 @@ jobs:
           # keep release-asset URLs simple: no '+' in file names
           VERSION="${VERSION//+/_}"
           NAME="nanomq-cong-${VERSION}-linux-${{ matrix.arch }}"
-          mkdir -p pack/${NAME}/lib
+          mkdir -p pack/${NAME}
           cp build/nanomq/nanomq pack/${NAME}/
           cp build/cong/cong_nanomq.so pack/${NAME}/
-          # NanoNNG's TLS links the MbedTLS built above; bundle its runtime
-          # libraries so the tarball runs without a system mbedtls install
-          # (the binary carries an $ORIGIN/lib rpath).
-          cp /usr/local/lib/libmbedcrypto.so.* pack/${NAME}/lib/ || true
-          cp /usr/local/lib/libmbedx509.so.*   pack/${NAME}/lib/ || true
-          cp /usr/local/lib/libmbedtls.so.*    pack/${NAME}/lib/ || true
+          # Nothing is bundled: readelf shows the broker needs only libc
+          # (NanoNNG's MbedTLS is linked statically into it) and the plugin
+          # only the system libcrypto.so.3, which the Debian package declares
+          # as a dependency.
           cp cong/conf/nanomq.conf pack/${NAME}/
           cp -r cong/rules pack/${NAME}/rules
           cp cong/deploy/nanomq.service pack/${NAME}/
@@ -245,6 +245,18 @@ jobs:
           tar -czf ${NAME}.tar.gz -C pack ${NAME}
           sha256sum ${NAME}.tar.gz > ${NAME}.tar.gz.sha256
           echo "artifact_name=${NAME}" >> $GITHUB_ENV
+          # the Debian package step takes its version from here; build-deb.sh
+          # turns the '_' of a master build into '+' for dpkg
+          echo "pkg_version=${VERSION}" >> $GITHUB_ENV
+
+      - name: Build the Debian package
+        run: |
+          # the tarball step staged the two binaries; this lays them out the
+          # way a Debian package should and wraps them with dpkg-deb (no
+          # debhelper, no extra build-deps - see cong/tools/build-deb.sh)
+          DEB=$(sh cong/tools/build-deb.sh --stage "pack/${{ env.artifact_name }}" \
+                --version "${{ env.pkg_version }}" --arch ${{ matrix.arch }} --out .)
+          echo "deb_path=${DEB}" >> $GITHUB_ENV
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -253,6 +265,8 @@ jobs:
           path: |
             ${{ env.artifact_name }}.tar.gz
             ${{ env.artifact_name }}.tar.gz.sha256
+            ${{ env.deb_path }}
+            ${{ env.deb_path }}.sha256
           if-no-files-found: error
 
   release:
