@@ -57,8 +57,17 @@ nano_plugin_acl_check(conn_param *cparam, conf *config, int action, const char *
 	struct nano_hook_acl_check event;
 
 	// Birth, kill and other $SYS event messages are not something the client
-	// published, so no plugin gets to deny them.
+	// published, so no plugin gets to deny them (handle_pub gates is_event
+	// before calling). Without a conn_param there is no client to authorise:
+	// when a plugin owns this point that is a fail-closed deny, matching the
+	// no-match-is-deny semantics of the rule engines; with no plugin the
+	// native ACL stays in charge and the packet passes untouched.
 	if (cparam == NULL || topic == NULL) {
+		if (plugin_hook_has(HOOK_ACL_CHECK)) {
+			log_warn("plugin acl deny %s: no client identity on this message",
+			    action == NANO_HOOK_ACL_PUB ? "publish" : "subscribe");
+			return NANO_HOOK_DENIED;
+		}
 		return NANO_HOOK_ALLOWED;
 	}
 

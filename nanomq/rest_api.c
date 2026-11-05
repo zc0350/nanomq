@@ -3840,7 +3840,7 @@ send_publish(nng_socket *sock, const char *clientid, char *payload,
 
 		nng_msg *msg = NULL;
 		if ((rv = encode_common_mqtt_msg(
-		              &msg, pub_msg, clientid, protover) != 0) ||
+		              &msg, pub_msg, clientid, protover)) != 0 ||
 		    (rv = nng_sendmsg(*sock, msg, 0)) != 0) {
      			nng_msg_free(msg);
 			break;

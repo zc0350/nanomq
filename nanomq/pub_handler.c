@@ -419,13 +419,16 @@ rule_engine_filter(nano_work *work, rule *info)
 					}
 				}
 			}
-		} else {
-			if (!pp->payload.data || pp->payload.len <= 0) {
-				filter = false;
-			}
-
-			payload_filter(pp, info);
-			filter = true;
+			} else {
+				// no WHERE conditions: the rule matches on the
+				// topic alone. An empty payload is fine here -
+				// payload_filter() reads it through
+				// cJSON_ParseWithLength(), which returns NULL
+				// instead of touching the buffer, and with no
+				// payload conditions there is nothing left to
+				// dereference it.
+				payload_filter(pp, info);
+				filter = true;
 		}
 	} else {
 		// printf("MISMATCH filter: %s, topic: %s\n", info->topic,
@@ -921,18 +924,23 @@ compose_sql_clause(rule *info, sbuf_t *key, sbuf_t *value,
 
     case RULE_PAYLOAD_ALL: {
 		const char *payload_key = (col != NULL) ? col : "Payload";
+        // a zero-length PUBLISH carries no payload bytes at all
         char *esc = sql_escape(pp->payload.data);
     	sbuf_init(&key_sb, strlen(payload_key)+8);
-    	sbuf_init(&val_sb, strlen(esc)+8);
+    	sbuf_init(&val_sb, (esc ? strlen(esc) : 0) + 8);
         sbuf_appendf(&key_sb, "%s, ", payload_key);
-        sbuf_appendf(&val_sb, "'%s', ", esc);
-        free(esc);
+        if (esc) {
+            sbuf_appendf(&val_sb, "'%s', ", esc);
+            free(esc);
+        } else {
+            sbuf_appendf(&val_sb, "NULL, ");
+        }
         break;
     }
 
     case RULE_PAYLOAD_FIELD:
 		sbuf_init(&key_sb,   512);
-    	sbuf_init(&val_sb, strlen(pp->payload.data)*2);
+    	sbuf_init(&val_sb, (pp->payload.data ? strlen(pp->payload.data) : 0) * 2);
 
         for (int i = 0; i < cvector_size(info->payload); i++) {
             rule_payload *p = info->payload[i];
@@ -1117,18 +1125,23 @@ compose_sql_clause_new(rule *info, sbuf_t *key, sbuf_t *value,
 
     case RULE_PAYLOAD_ALL: {
 		const char *payload_key = (col != NULL) ? col : "Payload";
+        // a zero-length PUBLISH carries no payload bytes at all
         char *esc = sql_escape(pp->payload.data);
     	sbuf_init(&key_sb, strlen(payload_key)+8);
-    	sbuf_init(&val_sb, strlen(esc)+8);
+    	sbuf_init(&val_sb, (esc ? strlen(esc) : 0) + 8);
         sbuf_appendf(&key_sb, "%s, ", payload_key);
-        sbuf_appendf(&val_sb, "'%s', ", esc);
-        free(esc);
+        if (esc) {
+            sbuf_appendf(&val_sb, "'%s', ", esc);
+            free(esc);
+        } else {
+            sbuf_appendf(&val_sb, "NULL, ");
+        }
         break;
     }
 
     case RULE_PAYLOAD_FIELD:
 		sbuf_init(&key_sb,   512);
-    	sbuf_init(&val_sb, strlen(pp->payload.data)*2);
+    	sbuf_init(&val_sb, (pp->payload.data ? strlen(pp->payload.data) : 0) * 2);
 
         for (int i = 0; i < cvector_size(info->payload); i++) {
             rule_payload *p = info->payload[i];
@@ -1331,6 +1344,17 @@ rule_engine_insert_sql(nano_work *work)
 					}
 				}
 
+				// generate_key() returns NULL when no flagged
+				// field produced a key (missing identity or an
+				// empty payload); a NULL key would crash the
+				// strlen() in fdb_transaction_set below.
+				if (key == NULL) {
+					log_warn("rule %s: no key could be generated from this publish, record skipped",
+					    rules[i].raw_sql ? rules[i].raw_sql : "");
+					cJSON_Delete(jso);
+					continue;
+				}
+
 				char *dest = cJSON_PrintUnformatted(jso);
 				log_debug("%s", key);
 				log_debug("%s", dest);
@@ -1355,7 +1379,8 @@ rule_engine_insert_sql(nano_work *work)
 				fdb_future_destroy(f);
 				fdb_transaction_destroy(tr);
 
-				free(key);
+				// key comes from generate_key()'s nng_strdup
+				nng_free(key, strlen(key) + 1);
 				cJSON_free(dest);
 				cJSON_Delete(jso);
 			}

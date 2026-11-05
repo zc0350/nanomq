@@ -77,8 +77,8 @@ send_http(char *method, int id, char *payload)
 	char *ori_url = "http://localhost:8081/api/v4/rules";
 	int              rv;
 	const char *     hdr;
-	int              len;
-	void *           data;
+	int              len  = 0;
+	void *           data = NULL;
 	nng_iov          iov;
 
 	char new_url[64] = { 0 };
@@ -152,12 +152,15 @@ send_http(char *method, int id, char *payload)
 	}
 
 	len = atoi(hdr);
-	if (len == 0) {
+	if (len <= 0) {
 		return;
 	}
 
 	// Allocate a buffer to receive the body data.
-	data = nng_alloc(len);
+	if ((data = nng_alloc(len)) == NULL) {
+		fprintf(stderr, "Out of memory for response body.\n");
+		goto out;
+	}
 
 	// Set up a single iov to point to the buffer.
 	iov.iov_len = len;

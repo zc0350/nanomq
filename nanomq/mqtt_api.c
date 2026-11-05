@@ -131,21 +131,71 @@ decode_common_mqtt_msg(nng_msg **dest, nng_msg *src)
 		return rv;
 	}
 	uint8_t *ptr        = nng_msg_body(src);
+	size_t   remaining  = nng_msg_len(src);
 	uint32_t header_len = 0;
+	// the frame is self-consistent today (both peers are our own
+	// encode_common_mqtt_msg), but validate each field against the
+	// remaining bytes anyway: a future peer must not turn embedded
+	// lengths into out-of-bounds reads
+	if (remaining < 4) {
+		nng_msg_free(msg);
+		nng_msg_free(src);
+		return NNG_EMSGSIZE;
+	}
 	NNI_GET32(ptr, header_len);
 	ptr += 4;
-	nng_msg_header_append(msg, ptr, header_len);
+	if (header_len > remaining - 4) {
+		nng_msg_free(msg);
+		nng_msg_free(src);
+		return NNG_EMSGSIZE;
+	}
+	remaining -= 4 + header_len;
+	if ((rv = nng_msg_header_append(msg, ptr, header_len)) != 0) {
+		nng_msg_free(msg);
+		nng_msg_free(src);
+		return rv;
+	}
 	ptr += header_len;
+	if (remaining < 4) {
+		nng_msg_free(msg);
+		nng_msg_free(src);
+		return NNG_EMSGSIZE;
+	}
 	uint32_t body_len = 0;
 	NNI_GET32(ptr, body_len);
 	ptr += 4;
-	nng_msg_append(msg, ptr, body_len);
+	if (body_len > remaining - 4) {
+		nng_msg_free(msg);
+		nng_msg_free(src);
+		return NNG_EMSGSIZE;
+	}
+	remaining -= 4 + body_len;
+	if ((rv = nng_msg_append(msg, ptr, body_len)) != 0) {
+		nng_msg_free(msg);
+		nng_msg_free(src);
+		return rv;
+	}
 	ptr += body_len;
 
+	if (remaining < 4) {
+		nng_msg_free(msg);
+		nng_msg_free(src);
+		return NNG_EMSGSIZE;
+	}
 	uint32_t clientid_sz = 0;
 	NNI_GET32(ptr, clientid_sz);
 	ptr += 4;
+	if (clientid_sz > remaining - 4 || remaining - 4 - clientid_sz < 1) {
+		nng_msg_free(msg);
+		nng_msg_free(src);
+		return NNG_EMSGSIZE;
+	}
 	char *clientid = nng_zalloc(clientid_sz + 1);
+	if (clientid == NULL) {
+		nng_msg_free(msg);
+		nng_msg_free(src);
+		return NNG_ENOMEM;
+	}
 	memcpy(clientid, ptr, clientid_sz);
 	ptr += clientid_sz;
 	uint8_t proto_ver = *(uint8_t *) ptr;
@@ -387,17 +437,39 @@ nano_iceoryx_recv_nng_msg(nng_iceoryx_suber *suber, nng_msg *icemsg, nng_msg **m
 		return rv;
 
 	icebuf = nng_msg_payload_ptr(icemsg);
-	// decode header
-	icehdrlen = *(uint8_t *)icebuf;
+	size_t icelen = nng_msg_payload_len(icemsg);
+	// the payload lives in shared memory another process wrote: validate
+	// the embedded lengths before reading past the segment
+	if (icebuf == NULL || icelen < 1) {
+		nng_msg_free(msg);
+		return NNG_EMSGSIZE;
+	}
+	// decode header: one length byte, the header, then the 4-byte body
+	// length. Subtracting from icelen instead of adding to it keeps the
+	// check exact even where size_t is 32 bits.
+	icehdrlen    = *(uint8_t *) icebuf;
+	size_t total = 1 + icehdrlen + 4; // <= 260, cannot overflow
+	if (total > icelen) {
+		nng_msg_free(msg);
+		return NNG_EMSGSIZE;
+	}
 	rv = nng_msg_header_append(msg, icebuf + 1, icehdrlen);
-	if (rv != 0)
+	if (rv != 0) {
+		nng_msg_free(msg);
 		return rv;
+	}
 
 	// decode body
 	NNI_GET32(icebuf + 1 + icehdrlen, icebodylen);
-	rv = nng_msg_append(msg, icebuf + 1 + icehdrlen + 4, icebodylen);
-	if (rv != 0)
+	if (icebodylen > icelen - total) {
+		nng_msg_free(msg);
+		return NNG_EMSGSIZE;
+	}
+	rv = nng_msg_append(msg, icebuf + total, icebodylen);
+	if (rv != 0) {
+		nng_msg_free(msg);
 		return rv;
+	}
 
 	// Create a cparam ...
 	conn_param *cparam = create_cparam("atestclientid", MQTT_PROTOCOL_VERSION_v311);

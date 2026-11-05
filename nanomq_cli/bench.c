@@ -328,9 +328,11 @@ nnb_connect(nnb_conn_opt *opt)
 	int        rv;
 
 	if (opt->tls.enable) {
-		sprintf(url, "tls+mqtt-tcp://%s:%d", opt->host, opt->port);
+		snprintf(url, sizeof(url), "tls+mqtt-tcp://%s:%d", opt->host,
+		    opt->port);
 	} else {
-		sprintf(url, "mqtt-tcp://%s:%d", opt->host, opt->port);
+		snprintf(url, sizeof(url), "mqtt-tcp://%s:%d", opt->host,
+		    opt->port);
 	}
 
 	rv = opt->version == 5 ? nng_mqttv5_client_open(&sock)
@@ -390,9 +392,11 @@ nnb_subscribe(nnb_sub_opt *opt)
 	int          rv;
 
 	if (opt->tls.enable) {
-		sprintf(url, "tls+mqtt-tcp://%s:%d", opt->host, opt->port);
+		snprintf(url, sizeof(url), "tls+mqtt-tcp://%s:%d", opt->host,
+		    opt->port);
 	} else {
-		sprintf(url, "mqtt-tcp://%s:%d", opt->host, opt->port);
+		snprintf(url, sizeof(url), "mqtt-tcp://%s:%d", opt->host,
+		    opt->port);
 	}
 
 	rv = opt->version == 5 ? nng_mqttv5_client_open(&sock)
@@ -468,9 +472,11 @@ nnb_publish(nnb_pub_opt *opt)
 	int          rv;
 
 	if (opt->tls.enable) {
-		sprintf(url, "tls+mqtt-tcp://%s:%d", opt->host, opt->port);
+		snprintf(url, sizeof(url), "tls+mqtt-tcp://%s:%d", opt->host,
+		    opt->port);
 	} else {
-		sprintf(url, "mqtt-tcp://%s:%d", opt->host, opt->port);
+		snprintf(url, sizeof(url), "mqtt-tcp://%s:%d", opt->host,
+		    opt->port);
 	}
 
 	rv = opt->version == 5 ? nng_mqttv5_client_open(&sock)

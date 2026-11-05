@@ -227,9 +227,14 @@ webhook_msg_publish(nng_socket *sock, conf_web_hook *hook_conf,
 				len = 0;
 		} else {
 			encode = nng_zalloc(out_size);
-			len    = nmq_base64_encode(
-				(const uint8_t *) pub_packet->payload.data,
-				pub_packet->payload.len, encode, out_size);
+			if (encode == NULL) {
+				log_error("Out of memory for Base64 encoding.");
+				len = (size_t) -1;
+			} else {
+				len = nmq_base64_encode(
+					(const uint8_t *) pub_packet->payload.data,
+					pub_packet->payload.len, encode, out_size);
+			}
 		}
 		if (len != (size_t)-1 && len > 0) {
 			cJSON_AddStringToObject(obj, "payload", encode);
@@ -245,8 +250,14 @@ webhook_msg_publish(nng_socket *sock, conf_web_hook *hook_conf,
 			len = 0;
 		} else {
 			encode   = nng_zalloc(out_size);
-			len      = base64_no_padding_encode(
-					pub_packet->payload.data, pub_packet->payload.len, encode, out_size);
+			if (encode == NULL) {
+				log_error("Out of memory for Base64 encoding.");
+				len = (size_t) -1;
+			} else {
+				len = base64_no_padding_encode(
+					pub_packet->payload.data, pub_packet->payload.len,
+					encode, out_size);
+			}
 		}
 		if (len != (size_t)-1 && len > 0) {
 			cJSON_AddStringToObject(obj, "payload", encode);
@@ -262,8 +273,14 @@ webhook_msg_publish(nng_socket *sock, conf_web_hook *hook_conf,
 			len = 0;
 		} else {
 			encode   = nng_zalloc(out_size);
-			len      = base62_encode(
-                 pub_packet->payload.data, pub_packet->payload.len, encode, out_size);
+			if (encode == NULL) {
+				log_error("Out of memory for Base62 encoding.");
+				len = (size_t) -1;
+			} else {
+				len = base62_encode(
+					pub_packet->payload.data, pub_packet->payload.len,
+					encode, out_size);
+			}
 		}
         if (len != (size_t)-1 && len > 0) {
             cJSON_AddStringToObject(obj, "payload", encode);
@@ -284,7 +301,12 @@ webhook_msg_publish(nng_socket *sock, conf_web_hook *hook_conf,
 
 	char *json = cJSON_PrintUnformatted(obj);
 
-	int rv = nng_send(*sock, json, strlen(json), NNG_FLAG_NONBLOCK);
+	int rv = -1;
+	if (json != NULL) {
+		rv = nng_send(*sock, json, strlen(json), NNG_FLAG_NONBLOCK);
+	} else {
+		log_error("Out of memory printing webhook message.");
+	}
 
 	nng_strfree(json);
 	cJSON_Delete(obj);
@@ -315,7 +337,12 @@ webhook_client_connack(nng_socket *sock, conf_web_hook *hook_conf,
 
 	char *json = cJSON_PrintUnformatted(obj);
 
-	int rv = nng_send(*sock, json, strlen(json), NNG_FLAG_NONBLOCK);
+	int rv = -1;
+	if (json != NULL) {
+		rv = nng_send(*sock, json, strlen(json), NNG_FLAG_NONBLOCK);
+	} else {
+		log_error("Out of memory printing webhook message.");
+	}
 
 	nng_strfree(json);
 	cJSON_Delete(obj);
@@ -344,7 +371,12 @@ webhook_client_disconnect(nng_socket *sock, conf_web_hook *hook_conf,
 
 	char *json = cJSON_PrintUnformatted(obj);
 
-	int rv = nng_send(*sock, json, strlen(json), NNG_FLAG_NONBLOCK);
+	int rv = -1;
+	if (json != NULL) {
+		rv = nng_send(*sock, json, strlen(json), NNG_FLAG_NONBLOCK);
+	} else {
+		log_error("Out of memory printing webhook message.");
+	}
 
 	nng_strfree(json);
 	cJSON_Delete(obj);

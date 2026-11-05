@@ -272,20 +272,32 @@ bridge_downward_msg_coding(nano_work *work)
 				topic->body =
 				    nng_strnins(topic->body, sub_topic->prefix,
 				        topic->len, sub_topic->prefix_len);
-				topic->len = strlen(topic->body);
-				if (rv == NNG_STAT_STRING)
-					nng_free(tmp, strlen(tmp));
-				rv = NNG_STAT_STRING; // mark it for free
+				if (topic->body == NULL) {
+					// out of memory: keep the unmodified topic
+					topic->body = tmp;
+					log_warn("bridge topic prefix rewrite failed: out of memory");
+				} else {
+					topic->len = strlen(topic->body);
+					if (rv == NNG_STAT_STRING)
+						nng_free(tmp, strlen(tmp));
+					rv = NNG_STAT_STRING; // mark it for free
+				}
 			}
 			if (node->sub_list[i]->suffix != NULL) {
 				char *tmp = topic->body;
 				topic->body =
 				    nng_strncat(topic->body, sub_topic->suffix,
 				        topic->len, sub_topic->suffix_len);
-				topic->len = strlen(topic->body);
-				if (rv == NNG_STAT_STRING)
-					nng_free(tmp, strlen(tmp));
-				rv = NNG_STAT_STRING; // mark it for free
+				if (topic->body == NULL) {
+					// out of memory: keep the unmodified topic
+					topic->body = tmp;
+					log_warn("bridge topic suffix rewrite failed: out of memory");
+				} else {
+					topic->len = strlen(topic->body);
+					if (rv == NNG_STAT_STRING)
+						nng_free(tmp, strlen(tmp));
+					rv = NNG_STAT_STRING; // mark it for free
+				}
 			}
 			work->pub_packet->fixed_header.retain =
 			    sub_topic->retain == NO_RETAIN
@@ -319,11 +331,11 @@ bridge_downward_msg_coding(nano_work *work)
 				}
 				nng_mqtt_msg_free_publish_buf(work->msg);
 			}
-			nng_free(topic, sizeof(topic));
+			nng_free(topic, sizeof(*topic));
 			return;
 		}
 	}
-	nng_free(topic, sizeof(topic));
+	nng_free(topic, sizeof(*topic));
 }
 
 nng_msg *
@@ -685,8 +697,10 @@ hybrid_tcp_client(bridge_param *bridge_arg)
 
 	if (node->enable) {
 		if (0 != (rv = nng_dialer_start(*dialer, NNG_FLAG_ALLOC))) {
+			// route through the shared cleanup: a bare return
+			// leaked the dialer and left the socket half-open
 			log_error("nng dialer start failed %d", rv);
-			return rv;
+			goto error;
 		}
 	}
 	return 0;
@@ -941,6 +955,14 @@ hybrid_bridge_client(nng_socket *sock, conf *config, conf_bridge_node *node)
 	rv = nng_cv_alloc(&bridge_arg->exec_cv, bridge_arg->exec_mtx);
 	if (rv != 0) {
 		NANO_NNG_FATAL("nng_cv_alloc", rv);
+		goto error;
+	}
+
+	// server is optional in the config; hybrid_cb would strdup(NULL) on
+	// its first pass, so validate before the reconnect thread starts
+	if (node->address == NULL) {
+		log_error("hybrid bridge node has no server configured");
+		rv = NNG_EINVAL;
 		goto error;
 	}
 
@@ -1578,8 +1600,10 @@ bridge_tcp_client(nng_socket *sock, conf *config, conf_bridge_node *node, bridge
 	if (node->enable) {
 		rv = nng_dialer_start(*dialer, NNG_FLAG_NONBLOCK);
 		if (rv != 0) {
+			// route through the shared cleanup: a bare return
+			// leaked the dialer and left the socket half-open
 			log_error("nng dialer start failed %d", rv);
-			return rv;
+			goto error;
 		}
 	}
 	return 0;
@@ -2078,31 +2102,54 @@ bridge_pub_handler(nano_work *work)
 						char *new_topic = generate_repub_topic(
 						    node->forwards_list[i],
 						    topic->body, false);
-						topic->body = new_topic;
-						topic->len  = strlen(new_topic);
-						rv = NNG_STAT_STRING;
+						if (new_topic == NULL) {
+							// a malformed forward rule
+							// (e.g. a mid-topic # the
+							// config parser marked
+							// invalid) yields no topic:
+							// keep the local one
+							// instead of strlen(NULL)
+							log_warn("bridge forward rule for %s produced no topic, publishing under the local topic",
+							    topic->body);
+						} else {
+							topic->body = new_topic;
+							topic->len  = strlen(new_topic);
+							rv = NNG_STAT_STRING;
+						}
 					}
 					if (node->forwards_list[i]->prefix != NULL) {
 						char *tmp = topic->body;
 						topic->body =
 							nng_strnins(topic->body, node->forwards_list[i]->prefix,
 										topic->len, node->forwards_list[i]->prefix_len);
+						if (topic->body == NULL) {
+							// out of memory: keep the unmodified topic
+							topic->body = tmp;
+							log_warn("bridge topic prefix rewrite failed: out of memory");
+						} else {
 						topic->len = strlen(topic->body);
 						if (rv == NNG_STAT_STRING)
 							nng_free(tmp, strlen(tmp));
 						else
 							rv = NNG_STAT_STRING;	//mark it for free
+						}
 					}
 					if (node->forwards_list[i]->suffix != NULL) {
 						char *tmp = topic->body;
 						topic->body =
 							nng_strncat(topic->body, node->forwards_list[i]->suffix,
 										topic->len, node->forwards_list[i]->suffix_len);
+						if (topic->body == NULL) {
+							// out of memory: keep the unmodified topic
+							topic->body = tmp;
+							log_warn("bridge topic suffix rewrite failed: out of memory");
+						} else {
 						topic->len = strlen(topic->body);
 						if (rv == NNG_STAT_STRING)
 							nng_free(tmp, strlen(tmp));
 						else
 							rv = NNG_STAT_STRING;	//mark it for free
+						}
 					}
 					uint8_t retain;
 					uint8_t qos;
@@ -2171,6 +2218,6 @@ bridge_pub_handler(nano_work *work)
 		}
 		nng_mtx_unlock(node->mtx);
 	}
-	nng_free(topic, sizeof(topic));
+	nng_free(topic, sizeof(*topic));
 	return;
 }

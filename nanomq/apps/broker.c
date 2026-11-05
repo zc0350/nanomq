@@ -296,9 +296,17 @@ server_cb(void *arg)
 		} else if (work->proto == PROTO_HTTP_SERVER ||
 		    work->proto == PROTO_AWS_BRIDGE) {
 			nng_msg *decode_msg = NULL;
+			// decode_common_mqtt_msg only fails under memory
+			// pressure and then leaves decode_msg NULL; a decoded
+			// non-PUBLISH message still has to be released here.
 			if (decode_common_mqtt_msg(&decode_msg, msg) != 0 ||
+			    decode_msg == NULL ||
 			    nng_msg_get_type(decode_msg) != CMD_PUBLISH) {
-				conn_param_free(nng_msg_get_conn_param(decode_msg));
+				if (decode_msg != NULL) {
+					conn_param_free(
+					    nng_msg_get_conn_param(decode_msg));
+					nng_msg_free(decode_msg);
+				}
 				work->state = RECV;
 				nng_ctx_recv(work->extra_ctx, work->aio);
 				break;
@@ -381,6 +389,13 @@ server_cb(void *arg)
 			if ((work->sub_pkt = nng_zalloc(sizeof(packet_subscribe))) ==
 			    NULL) {
 				log_error("nng_zalloc");
+				// the protocol layer cloned a conn_param
+				// reference onto this msg; SEND would release
+				// it, the bail path has to do it itself
+				if (work->cparam != NULL) {
+					conn_param_free(work->cparam);
+					work->cparam = NULL;
+				}
 				nng_msg_free(work->msg);
 				work->msg   = NULL;
 				work->state = RECV;
@@ -476,6 +491,10 @@ server_cb(void *arg)
 			if ((work->unsub_pkt = nng_zalloc(
 			         sizeof(packet_unsubscribe))) == NULL) {
 				log_error("nng_zalloc");
+				if (work->cparam != NULL) {
+					conn_param_free(work->cparam);
+					work->cparam = NULL;
+				}
 				nng_msg_free(work->msg);
 				work->msg   = NULL;
 				work->state = RECV;
@@ -483,18 +502,37 @@ server_cb(void *arg)
 				break;
 			}
 
+			bool decode_failed = false;
 			if ((rv = decode_unsub_msg(work)) != 0 ||
 			    (rv = unsub_ctx_handle(work)) != 0) {
 				log_error("unsub_handler [%d]", rv);
+				// a failed UNSUBSCRIBE must not be acked:
+				// decode may have bailed before the packet
+				// id, and an UNSUBACK for id 0 would be a
+				// protocol lie. Stay connected and keep
+				// serving the session instead.
+				decode_failed = true;
 			}
 			// proxy unsub action to bridge
 			bridge_sub_handler(work);
 
+			// free unsub_pkt
+			unsub_pkt_free(work->unsub_pkt);
+			if (decode_failed) {
+				if (work->cparam != NULL) {
+					conn_param_free(work->cparam);
+					work->cparam = NULL;
+				}
+				nng_msg_free(work->msg);
+				work->msg   = NULL;
+				work->state = RECV;
+				nng_ctx_recv(work->ctx, work->aio);
+				break;
+			}
+
 			if (0 != (rv = encode_unsuback_msg(smsg, work)))
 				log_error("in unsuback [%d]", rv);
 
-			// free unsub_pkt
-			unsub_pkt_free(work->unsub_pkt);
 			nng_aio_set_prov_data(work->aio, &work->pid.id);
 			nng_aio_set_msg(work->aio, work->msg);
 			work->msg   = NULL;
@@ -1224,7 +1262,9 @@ broker(conf *nanomq_conf)
 		}
 		for (size_t t = 0; t < nanomq_conf->bridge.count; t++) {
 			conf_bridge_node *node = nanomq_conf->bridge.nodes[t];
-			node->sock = (nng_socket *) nng_alloc(
+			// zeroed: hybrid reconnect reads *node->sock on its
+			// first attempt, before any socket was ever opened
+			node->sock = (nng_socket *) nng_zalloc(
 				sizeof(nng_socket));
 #if defined(SUPP_QUIC)
 			if (node->hybrid) {

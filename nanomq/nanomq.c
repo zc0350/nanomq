@@ -76,7 +76,7 @@ print_help(void)
 static int
 check_trace(char *name)
 {
-	int pid, traced;
+	int pid, traced = -1;
 
 	switch (pid = fork()) {
 	case 0:
@@ -84,7 +84,7 @@ check_trace(char *name)
 
 #ifdef NANO_PLATFORM_DARWIN
 		traced = ptrace(PT_ATTACHEXC, pid, 0, 0);
-#elif NANO_PLATFORM_LINUX
+#elif defined(NANO_PLATFORM_LINUX)
 		traced = ptrace(PTRACE_ATTACH, pid, 0, 0);
 #else
 		printf("error: current platform do support\n");

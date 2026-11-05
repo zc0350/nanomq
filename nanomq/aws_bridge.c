@@ -285,7 +285,7 @@ handle_recv_publish(MQTTPublishInfo_t *pub_info, uint16_t packet_id,
 
 	nng_msg *msg = NULL;
 	if ((rv = encode_common_mqtt_msg(
-	              &msg, pub_msg, node->clientid, node->proto_ver) != 0) ||
+	              &msg, pub_msg, node->clientid, node->proto_ver)) != 0 ||
 	    (rv = nng_sendmsg(sock, msg, 0)) != 0) {
 		nng_msg_free(msg);
 		log_error("Failed to send publish message to broker: %d", rv);

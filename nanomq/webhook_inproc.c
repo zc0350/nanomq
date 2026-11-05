@@ -86,6 +86,9 @@ send_msg(hook_work *w, nng_msg *msg)
 	} else {
 		if ((rv = nng_http_client_alloc(&w->client, w->url)) != 0) {
 			log_error("init failed: %s\n", nng_strerror(rv));
+			// msg came from the lmq (or the caller): free it before
+			// bailing out, otherwise every failed connect leaks one
+			nng_msg_free(msg);
 			goto out;
 		}
 		// Start connection process...

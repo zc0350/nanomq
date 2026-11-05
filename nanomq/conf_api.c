@@ -900,10 +900,17 @@ set_auth_http_req(cJSON *json, const char *conf_path, conf_auth_http_req *req,
 
 	size_t header_count = req->header_count;
 
+	// headers are written as an object of {"Key": "value"} pairs (see
+	// get_auth_http_req_config), so iterating the object yields the value
+	// nodes: each is a string whose ->string holds the key. An array of
+	// strings has no key at all and is ignored rather than crashing the
+	// strdup below.
+	bool headers_given = cJSON_IsObject(headers);
+
 	int index = 0;
 	cJSON_ArrayForEach(item, headers)
 	{
-		if (cJSON_IsString(item)) {
+		if (cJSON_IsString(item) && item->string != NULL) {
 			char *key   = item->string;
 			char *value = item->valuestring;
 
@@ -911,14 +918,39 @@ set_auth_http_req(cJSON *json, const char *conf_path, conf_auth_http_req *req,
 			//     conf_path, key_prefix, "headers.", key, value);
 			if (header_count <= index) {
 				conf_http_header *hdr = nng_zalloc(sizeof(conf_http_header));
+				conf_http_header **hdrs = realloc(req->headers,
+				    (req->header_count + 1) * sizeof(conf_http_header *));
+				if (hdrs == NULL) {
+					free(hdr);
+					break;
+				}
+				req->headers = hdrs;
 				req->header_count++;
-				req->headers = realloc(req->headers,
-				    (req->header_count) * sizeof(char *));
 				req->headers[index] = hdr;
 			}
 			update_string(req->headers[index]->key, key);
 			update_string(req->headers[index]->value, value);
 			index++;
+		}
+	}
+
+	// drop headers the new request no longer carries, or stale entries
+	// (e.g. old credentials) would survive the update. Only when this
+	// request actually carried headers: an update that never mentions
+	// them must leave the stored ones alone.
+	if (headers_given) {
+		for (size_t i = index; i < header_count; i++) {
+			if (req->headers[i]->key != NULL) {
+				free(req->headers[i]->key);
+			}
+			if (req->headers[i]->value != NULL) {
+				free(req->headers[i]->value);
+			}
+			free(req->headers[i]);
+			req->headers[i] = NULL;
+		}
+		if ((size_t) index < header_count) {
+			req->header_count = index;
 		}
 	}
 
@@ -928,6 +960,8 @@ set_auth_http_req(cJSON *json, const char *conf_path, conf_auth_http_req *req,
 
 		conf_http_param **req_param   = req->params;
 		size_t            param_count = req->param_count;
+		// free against the OLD count: req_param is realloc'd to the
+		// size of the incoming array below, which may be smaller
 		for (size_t i = 0; i < param_count; i++) {
 			if (req_param[i]->name) {
 				free(req->params[i]->name);
@@ -937,11 +971,25 @@ set_auth_http_req(cJSON *json, const char *conf_path, conf_auth_http_req *req,
 		}
 		req_param = realloc(req_param,
 		    sizeof(conf_http_param *) * cJSON_GetArraySize(params));
+		if (req_param == NULL) {
+			// the old entries were freed above; only the array itself
+			// is left, and realloc left it untouched on failure
+			free(req->params);
+			req->params      = NULL;
+			req->param_count = 0;
+			return;
+		}
+		req->params = req_param;
 
 		index = 0;
 		cJSON_ArrayForEach(item, params)
 		{
-			char *arg        = cJSON_GetStringValue(item);
+			char *arg = cJSON_GetStringValue(item);
+			if (arg == NULL) {
+				continue;
+			}
+			// allocated only after the name matched: the unknown
+			// branch used to leak it by continuing right away
 			req_param[index] = nng_zalloc(sizeof(conf_http_param));
 			if (nng_strcasecmp(arg, "username") == 0) {
 				// str_append(&param_str, "username");
@@ -1021,6 +1069,8 @@ set_auth_http_req(cJSON *json, const char *conf_path, conf_auth_http_req *req,
 				    req_param[index]->name, "mountpoint");
 				update_var(req_param[index]->type, MOUNTPOINT);
 			} else {
+				free(req_param[index]);
+				req_param[index] = NULL;
 				continue;
 			}
 			// str_append(&param_str, ",");
@@ -1058,17 +1108,17 @@ set_auth_http_config(cJSON *json, const char *conf_path, conf_auth_http *auth)
 
 	getNumberValue(json, item, "timeout", timeout, rv);
 	if (rv == 0) {
-		// snprintf(tm_str, sizeof(tm_str), "%llus", timeout);
-		// conf_update(conf_path, "auth.http.timeout", tm_str);
-		update_var(auth->timeout, timeout);
+		// nng_duration is signed int milliseconds and auth_http
+		// multiplies these seconds by 1000: clamp so the multiply
+		// cannot overflow into a negative (infinite) timeout
+		update_var(auth->timeout,
+		    timeout > 86400 ? 86400 : (int) timeout);
 	}
 
 	getNumberValue(json, item, "connect_timeout", connect_timeout, rv);
 	if (rv == 0) {
-		// snprintf(tm_str, sizeof(tm_str), "%llus", connect_timeout);
-		// conf_update(
-		//     conf_path, "auth.http.connect_timeout", tm_str);
-		update_var(auth->connect_timeout, connect_timeout);
+		update_var(auth->connect_timeout,
+		    connect_timeout > 86400 ? 86400 : (int) connect_timeout);
 	}
 
 	getNumberValue(json, item, "pool_size", pool_size, rv);
