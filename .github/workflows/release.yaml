@@ -25,6 +25,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege by default; the release job opts into contents: write.
+permissions:
+  contents: read
+
 env:
   # Release build: plugin framework + ACL support + TLS, and nothing else that
   # widens the attack surface (rule engine / DB backends / JWT stay off).
@@ -68,17 +72,18 @@ jobs:
           python3 scripts/config.py set MBEDTLS_THREADING_C
           python3 scripts/config.py set MBEDTLS_THREADING_PTHREAD
           mkdir build && cd build
-          cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTING=OFF -DCMAKE_INSTALL_RPATH='' ..
+          cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTING=OFF ..
           cmake --build . -j $(nproc)
           sudo make install
           sudo ldconfig
 
-      - name: Apply the NanoNNG patches (connect hook + client IP v6)
+      - name: Apply the NanoNNG patches (connect hook, client IP v6, auth cache key)
         run: |
-          git -C nng apply --check "$GITHUB_WORKSPACE/cong/patch/01-nng-connect-hook.patch"
-          git -C nng apply "$GITHUB_WORKSPACE/cong/patch/01-nng-connect-hook.patch"
-          git -C nng apply --check "$GITHUB_WORKSPACE/cong/patch/02-nng-client-ip-v6.patch"
-          git -C nng apply "$GITHUB_WORKSPACE/cong/patch/02-nng-client-ip-v6.patch"
+          # ordered: every patch's context assumes its predecessors are applied
+          for p in 01-nng-connect-hook 02-nng-client-ip-v6 03-nng-auth-http-cache-key; do
+            git -C nng apply --check "$GITHUB_WORKSPACE/cong/patch/$p.patch"
+            git -C nng apply "$GITHUB_WORKSPACE/cong/patch/$p.patch"
+          done
 
       - name: Configure
         run: |
@@ -109,13 +114,16 @@ jobs:
             echo "build ok"
           else
             echo "build failed, dumping error lines as annotations"
-            grep -n -B2 -A8 -iE "error(:|\b)" build.log | tail -n 25 | tr -d '\r' | cut -c1-400 |
+            grep -n -B2 -A8 -E "error:|undefined reference to|Error [0-9]+" build.log | tail -n 25 | tr -d '\r' | cut -c1-400 |
               while IFS= read -r line; do echo "::error::BUILD: $line"; done
             exit 1
           fi
 
       - name: Run rule engine unit tests
-        run: ./build/cong/cong_test
+        run: |
+          ./build/cong/cong_test
+          # also exercise the ctest registration (add_test in cong/CMakeLists.txt)
+          ctest --test-dir build/cong --output-on-failure
 
       - name: Validate sample rule files
         run: |
@@ -167,12 +175,13 @@ jobs:
           sudo make install
           sudo ldconfig
 
-      - name: Apply the NanoNNG patches (connect hook + client IP v6)
+      - name: Apply the NanoNNG patches (connect hook, client IP v6, auth cache key)
         run: |
-          git -C nng apply --check "$GITHUB_WORKSPACE/cong/patch/01-nng-connect-hook.patch"
-          git -C nng apply "$GITHUB_WORKSPACE/cong/patch/01-nng-connect-hook.patch"
-          git -C nng apply --check "$GITHUB_WORKSPACE/cong/patch/02-nng-client-ip-v6.patch"
-          git -C nng apply "$GITHUB_WORKSPACE/cong/patch/02-nng-client-ip-v6.patch"
+          # ordered: every patch's context assumes its predecessors are applied
+          for p in 01-nng-connect-hook 02-nng-client-ip-v6 03-nng-auth-http-cache-key; do
+            git -C nng apply --check "$GITHUB_WORKSPACE/cong/patch/$p.patch"
+            git -C nng apply "$GITHUB_WORKSPACE/cong/patch/$p.patch"
+          done
 
       - name: Configure
         run: |
@@ -194,7 +203,7 @@ jobs:
             echo "build ok"
           else
             echo "build failed, dumping error lines as annotations"
-            grep -n -B2 -A8 -iE "error(:|\b)" build.log | tail -n 25 | tr -d '\r' | cut -c1-400 |
+            grep -n -B2 -A8 -E "error:|undefined reference to|Error [0-9]+" build.log | tail -n 25 | tr -d '\r' | cut -c1-400 |
               while IFS= read -r line; do echo "::error::BUILD: $line"; done
             exit 1
           fi
@@ -203,7 +212,13 @@ jobs:
         run: |
           VERSION="${{ github.ref_name }}"
           if ! [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+ ]]; then
-            VERSION="0.25.7+$(git rev-parse --short HEAD)"
+            # not a version tag: derive from the in-tree version.h so the
+            # artifact name never drifts from the upstream version
+            VERSION=$(awk '/^#define NANO_VER_MAJOR /{M=$3}
+                           /^#define NANO_VER_MINOR /{m=$3}
+                           /^#define NANO_VER_PATCH /{p=$3}
+                           END{print M"."m"."p}' nanomq/include/version.h)
+            VERSION="${VERSION}+$(git rev-parse --short HEAD)"
           fi
           # keep release-asset URLs simple: no '+' in file names
           VERSION="${VERSION//+/_}"
@@ -249,12 +264,23 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Create the release and upload packages
+      - name: Verify the package checksums
+        run: |
+          cd dist
+          sha256sum -c *.sha256
+
+      - name: Create or update the release and upload packages
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --repo "${{ github.repository }}" \
-            --title "${{ github.ref_name }}" \
-            --generate-notes \
-            dist/*
+          TAG="${{ github.ref_name }}"
+          REPO="${{ github.repository }}"
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            # re-pushed tag: refresh the assets instead of failing
+            gh release upload "$TAG" --repo "$REPO" --clobber dist/*
+          else
+            gh release create "$TAG" --repo "$REPO" \
+              --title "$TAG" \
+              --generate-notes \
+              dist/*
+          fi

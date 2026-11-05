@@ -47,3 +47,6 @@ libwinpthread-1.dll
 
 # zcode session files
 .zcode/
+
+# Python bytecode cache (cong/tools/*.py)
+__pycache__/
